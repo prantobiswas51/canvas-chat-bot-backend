@@ -7,6 +7,7 @@ export class AppController {
 
   @Get()
   getHello(): string {
+    console.log('[AppController] Root route hit — server is receiving requests');
     return this.appService.getHello();
   }
 }
