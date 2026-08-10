@@ -44,6 +44,9 @@ export class WebhookController {
   @Post()
   @HttpCode(200)
   handleEvent(@Body() body: any) {
+
+    console.log('Post webhook event received:');
+
     if (body.object === 'page') {
       for (const entry of body.entry ?? []) {
         for (const event of entry.messaging ?? []) {
