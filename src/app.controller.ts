@@ -10,4 +10,9 @@ export class AppController {
     console.log('[AppController] Root route hit — server is receiving requests');
     return this.appService.getHello();
   }
+
+  @Get('health')
+  getHealth() {
+    return { status: 'ok', timestamp: new Date().toISOString() };
+  }
 }
