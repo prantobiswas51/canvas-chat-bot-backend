@@ -20,7 +20,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:demo-chat": "ts-node -r tsconfig-paths/register src/database/seed-demo-chat.ts",
     "setup:whatsapp-channel": "ts-node -r tsconfig-paths/register src/database/setup-whatsapp-channel.ts",
-    "setup:messenger-channel": "ts-node -r tsconfig-paths/register src/database/setup-messenger-channel.ts"
+    "setup:messenger-channel": "ts-node -r tsconfig-paths/register src/database/setup-messenger-channel.ts",
+    "backfill:messenger-history": "ts-node -r tsconfig-paths/register src/database/backfill-messenger-history.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

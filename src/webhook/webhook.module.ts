@@ -10,12 +10,22 @@ import { Conversation } from '../chat/entities/conversation.entity';
 import { Message } from '../chat/entities/message.entity';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { MessengerModule } from '../messenger/messenger.module';
+import { WhatsappModule } from '../whatsapp/whatsapp.module';
+import { DispatchModule } from '../dispatch/dispatch.module';
+import { AiModule } from '../ai/ai.module';
+import { ProductsModule } from '../products/products.module';
+import { OrdersModule } from '../orders/orders.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([ChannelAccount, Customer, CustomerChannelIdentity, Conversation, Message]),
     RealtimeModule,
     MessengerModule,
+    WhatsappModule,
+    DispatchModule,
+    AiModule,
+    ProductsModule,
+    OrdersModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookService, WhatsappSignatureGuard],

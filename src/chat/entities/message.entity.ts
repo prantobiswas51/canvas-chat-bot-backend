@@ -1,12 +1,4 @@
-import {
-  Column,
-  CreateDateColumn,
-  Entity,
-  Index,
-  JoinColumn,
-  ManyToOne,
-  PrimaryGeneratedColumn,
-} from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { Conversation } from './conversation.entity';
 
 export enum MessageSender {
@@ -19,7 +11,7 @@ export enum MessageSender {
 export interface MessageAttachment {
   name: string;
   url: string;
-  type: 'image' | 'file';
+  type: 'image' | 'file' | 'audio';
   size?: string;
 }
 
@@ -52,6 +44,10 @@ export class Message {
   @Column({ name: 'external_message_id', type: 'varchar', length: 255, nullable: true })
   externalMessageId?: string;
 
-  @CreateDateColumn({ name: 'created_at' })
+  // Plain column (not @CreateDateColumn) on purpose — @CreateDateColumn force-
+  // overwrites with the current time on every insert, which would break the
+  // Messenger history backfill's ability to set the message's real send time.
+  // Still defaults to "now" at the DB level for normal (non-backfilled) inserts.
+  @Column({ name: 'created_at', type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 }

@@ -16,6 +16,20 @@ export enum ConversationStatus {
   RESOLVED = 'resolved',
 }
 
+// Captured once, off the first message of the conversation, when the
+// customer arrived by tapping a Click-to-WhatsApp / Click-to-Messenger ad
+// (see WebhookService's referral parsing). Absent for anyone who just
+// messaged the number/Page directly.
+export interface AdReferral {
+  platform: 'whatsapp' | 'messenger';
+  source?: string; // e.g. 'ad' (WhatsApp) or 'ADS' (Messenger)
+  adId?: string;
+  headline?: string;
+  body?: string;
+  mediaUrl?: string;
+  ctwaClid?: string;
+}
+
 // One thread per customer per channel.
 @Entity('conversations')
 export class Conversation {
@@ -40,9 +54,9 @@ export class Conversation {
   @Column({ type: 'enum', enum: ChannelType })
   channel: ChannelType;
 
-  // AI is off by default — a conversation only goes to ai_active once an agent
-  // explicitly enables it after opening the chat.
-  @Column({ type: 'enum', enum: ConversationStatus, default: ConversationStatus.HUMAN_MODERATOR })
+  // AI is on by default for new conversations — an agent can take over via
+  // "Take Over (Human Mode)" in the chat window.
+  @Column({ type: 'enum', enum: ConversationStatus, default: ConversationStatus.AI_ACTIVE })
   status: ConversationStatus;
 
   // Plain FK (no relation object) to avoid a cross-module import cycle with UsersModule.
@@ -57,6 +71,11 @@ export class Conversation {
 
   @Column({ name: 'unread_count', type: 'int', default: 0 })
   unreadCount: number;
+
+  // Set once, off whichever message first arrives with ad-referral data
+  // (see WebhookService) — null for conversations that started organically.
+  @Column({ name: 'ad_referral', type: 'jsonb', nullable: true })
+  adReferral?: AdReferral;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

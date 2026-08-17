@@ -13,6 +13,9 @@ export enum UserRole {
   ADMIN = 'admin',
   MODERATOR = 'moderator',
   MANAGER = 'manager',
+  // Default role for public self-signups (POST /auth/signup) — no dashboard
+  // access until an existing admin upgrades them via the Users page.
+  MEMBER = 'member',
 }
 
 @Entity('users')
@@ -31,7 +34,7 @@ export class User {
   @Column({ type: 'varchar', length: 255, select: false })
   password: string;
 
-  @Column({ type: 'enum', enum: UserRole, default: UserRole.MODERATOR })
+  @Column({ type: 'enum', enum: UserRole, default: UserRole.MEMBER })
   role: UserRole;
 
   @Column({ name: 'avatar_url', type: 'varchar', length: 500, nullable: true })

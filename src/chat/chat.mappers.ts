@@ -22,6 +22,8 @@ export function toConversationDto(c: Conversation) {
     id: c.id,
     channel: c.channel,
     status: c.status,
+    assignedModeratorId: c.assignedModeratorId,
+    adReferral: c.adReferral ?? undefined,
     unreadCount: c.unreadCount,
     lastMessage: c.lastMessage ?? '',
     lastMessageTime: formatTimestamp(c.lastMessageAt ?? c.createdAt),

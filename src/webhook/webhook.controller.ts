@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { WebhookService } from './webhook.service';
 import { WhatsappSignatureGuard } from './whatsapp-signature.guard';
+import { Public } from '../auth/decorators/public.decorator';
 
 @Controller('webhook')
 export class WebhookController {
@@ -14,6 +15,7 @@ export class WebhookController {
   ) {}
 
   // Meta calls this once (GET) to verify you own the endpoint
+  @Public()
   @Get()
   verify(@Query() query: Record<string, string>, @Res() res: Response) {
     const mode = query['hub.mode'];
@@ -34,6 +36,7 @@ export class WebhookController {
   }
 
   // Meta calls this (POST) for every message/event
+  @Public()
   @Post()
   @HttpCode(200)
   @UseGuards(WhatsappSignatureGuard)

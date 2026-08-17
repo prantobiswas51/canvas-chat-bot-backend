@@ -7,16 +7,14 @@ import { ChannelAccount } from './entities/channel-account.entity';
 import { CustomerChannelIdentity } from './entities/customer-channel-identity.entity';
 import { ChatService } from './chat.service';
 import { ChatController } from './chat.controller';
-import { WhatsappModule } from '../whatsapp/whatsapp.module';
-import { MessengerModule } from '../messenger/messenger.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { DispatchModule } from '../dispatch/dispatch.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Conversation, Message, Customer, ChannelAccount, CustomerChannelIdentity]),
-    WhatsappModule,
-    MessengerModule,
     RealtimeModule,
+    DispatchModule,
   ],
   controllers: [ChatController],
   providers: [ChatService],

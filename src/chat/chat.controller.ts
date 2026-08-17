@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestj
 import { ChatService } from './chat.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
+import { AssignModeratorDto } from './dto/assign-moderator.dto';
 
 @Controller('conversations')
 export class ChatController {
@@ -25,5 +26,10 @@ export class ChatController {
   @Patch(':id/status')
   updateStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateStatusDto) {
     return this.chatService.updateStatus(id, dto);
+  }
+
+  @Patch(':id/assign')
+  assignModerator(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignModeratorDto) {
+    return this.chatService.assignModerator(id, dto.moderatorId);
   }
 }

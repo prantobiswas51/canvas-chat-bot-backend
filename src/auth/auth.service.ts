@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { UsersService } from '../users/users.service';
-import { User } from '../users/entities/user.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 
 @Injectable()
 export class AuthService {
@@ -31,6 +31,13 @@ export class AuthService {
     const user = await this.validateUser(email, password);
     const tokens = this.signTokens(user);
     return { user, tokens };
+  }
+
+  // Public self-signup — always MEMBER, regardless of anything the client
+  // sends. Real role assignment only happens via an authenticated admin
+  // using POST /users (UsersService.create) from the Users page.
+  async signup(name: string, email: string, password: string): Promise<User> {
+    return this.usersService.create({ name, email, password, role: UserRole.MEMBER });
   }
 
   async refresh(refreshToken: string) {

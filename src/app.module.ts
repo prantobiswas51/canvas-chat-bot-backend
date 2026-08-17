@@ -7,6 +7,8 @@ import { WebhookModule } from './webhook/webhook.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { ChatModule } from './chat/chat.module';
+import { ChannelsModule } from './channels/channels.module';
+import { OrdersModule } from './orders/orders.module';
 
 @Module({
   imports: [
@@ -30,6 +32,8 @@ import { ChatModule } from './chat/chat.module';
     UsersModule,
     AuthModule,
     ChatModule,
+    ChannelsModule,
+    OrdersModule,
   ],
   controllers: [AppController],
   providers: [AppService],
