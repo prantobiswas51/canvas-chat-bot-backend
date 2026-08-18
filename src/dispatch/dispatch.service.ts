@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Conversation } from '../chat/entities/conversation.entity';
-import { ChannelType } from '../chat/entities/channel-account.entity';
+import { ChannelAccount, ChannelType } from '../chat/entities/channel-account.entity';
 import { CustomerChannelIdentity } from '../chat/entities/customer-channel-identity.entity';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
 import { MessengerApiService } from '../messenger/messenger-api.service';
@@ -17,6 +17,8 @@ export class DispatchService {
   constructor(
     @InjectRepository(CustomerChannelIdentity)
     private readonly identityRepo: Repository<CustomerChannelIdentity>,
+    @InjectRepository(ChannelAccount)
+    private readonly channelAccountRepo: Repository<ChannelAccount>,
     private readonly whatsappApiService: WhatsappApiService,
     private readonly messengerApiService: MessengerApiService,
   ) {}
@@ -42,7 +44,13 @@ export class DispatchService {
       if (conversation.channel === ChannelType.WHATSAPP) {
         await this.whatsappApiService.sendText(identity.externalUserId, content);
       } else {
-        await this.messengerApiService.sendText(identity.externalUserId, content);
+        // accessToken is select:false on the entity — list it explicitly so
+        // we actually send from the right Page's own token, not env's.
+        const channelAccount = await this.channelAccountRepo.findOne({
+          where: { id: conversation.channelAccountId },
+          select: { id: true, accessToken: true },
+        });
+        await this.messengerApiService.sendText(identity.externalUserId, content, channelAccount?.accessToken);
       }
     } catch (err) {
       this.logger.error(`Failed to deliver ${conversation.channel} message: ${(err as Error).message}`);

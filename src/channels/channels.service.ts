@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ChannelAccount } from '../chat/entities/channel-account.entity';
@@ -40,5 +40,10 @@ export class ChannelsService {
         accessToken: dto.accessToken,
       }),
     );
+  }
+
+  async remove(id: string): Promise<void> {
+    const result = await this.channelAccountRepo.delete(id);
+    if (!result.affected) throw new NotFoundException('Channel not found');
   }
 }

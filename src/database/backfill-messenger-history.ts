@@ -29,8 +29,12 @@ const dataSource = new DataSource({
 });
 
 const API_VERSION = process.env.WA_GRAPH_API_VERSION ?? 'v21.0';
-const PAGE_ID = process.env.FB_PAGE_ID;
-const PAGE_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
+
+// Resolved from the channel_accounts DB row inside run() — not read from
+// .env, since a Page can be connected entirely through Settings → Connected
+// Channels without ever touching FB_PAGE_ID/FB_PAGE_ACCESS_TOKEN.
+let PAGE_ID: string;
+let PAGE_TOKEN: string;
 
 interface GraphConversationRef {
   id: string;
@@ -82,11 +86,6 @@ async function getUserProfileName(psid: string): Promise<string | undefined> {
 }
 
 async function run() {
-  if (!PAGE_ID || !PAGE_TOKEN) {
-    console.error('FB_PAGE_ID / FB_PAGE_ACCESS_TOKEN not set in .env — nothing to do.');
-    process.exit(1);
-  }
-
   await dataSource.initialize();
   const channelAccountRepo = dataSource.getRepository(ChannelAccount);
   const customerRepo = dataSource.getRepository(Customer);
@@ -94,11 +93,54 @@ async function run() {
   const conversationRepo = dataSource.getRepository(Conversation);
   const messageRepo = dataSource.getRepository(Message);
 
-  const channelAccount = await channelAccountRepo.findOne({
-    where: { channel: ChannelType.MESSENGER, externalAccountId: PAGE_ID },
-  });
+  // accessToken is select:false on the entity — addSelect to actually get it
+  // back (each Page has its own token, stored per-row now).
+  const messengerAccounts = await channelAccountRepo
+    .createQueryBuilder('channel_account')
+    .addSelect('channel_account.accessToken')
+    .where('channel_account.channel = :channel', { channel: ChannelType.MESSENGER })
+    .orderBy('channel_account.createdAt', 'ASC')
+    .getMany();
+
+  if (messengerAccounts.length === 0) {
+    console.error(
+      'No Messenger row in channel_accounts — connect a Page first (Settings → Connected Channels, or "npm run setup:messenger-channel").',
+    );
+    await dataSource.destroy();
+    process.exit(1);
+  }
+
+  // CLI arg lets you target a specific Page if more than one is connected:
+  //   npm run backfill:messenger-history -- <pageId>
+  const requestedPageId = process.argv[2];
+  const channelAccount = requestedPageId
+    ? messengerAccounts.find((a) => a.externalAccountId === requestedPageId)
+    : messengerAccounts[0];
+
   if (!channelAccount) {
-    console.error('No channel_accounts row for this Page — run "npm run setup:messenger-channel" first.');
+    console.error(`No channel_accounts row found for page_id=${requestedPageId}.`);
+    await dataSource.destroy();
+    process.exit(1);
+  }
+
+  if (messengerAccounts.length > 1 && !requestedPageId) {
+    console.log(
+      `${messengerAccounts.length} Messenger Pages connected — defaulting to "${channelAccount.displayName}" ` +
+        `(${channelAccount.externalAccountId}). Pass a Page ID as an argument to target a different one.`,
+    );
+  }
+
+  PAGE_ID = channelAccount.externalAccountId;
+  // Falls back to the .env token only for a channel connected before
+  // per-row tokens existed (or added without one) — each Page normally
+  // carries its own token now, set from Settings → Connected Channels.
+  PAGE_TOKEN = channelAccount.accessToken || process.env.FB_PAGE_ACCESS_TOKEN || '';
+
+  if (!PAGE_TOKEN) {
+    console.error(
+      `No access token for page_id=${PAGE_ID} — add one via Settings → Connected Channels, or set FB_PAGE_ACCESS_TOKEN in .env.`,
+    );
+    await dataSource.destroy();
     process.exit(1);
   }
 

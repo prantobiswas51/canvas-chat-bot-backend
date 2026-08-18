@@ -1,25 +1,29 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-// Thin client for the Messenger Send API (Graph API). Same shape as
-// WhatsappApiService — single-Page setup for now: credentials come from env,
-// not the channel_accounts row (that column stays for future multi-page support).
+// Thin client for the Messenger Send API (Graph API). Each Facebook Page has
+// its own access token, so callers pass the token from that Page's
+// channel_accounts row — see sendText/getUserProfile below.
 @Injectable()
 export class MessengerApiService {
   private readonly logger = new Logger(MessengerApiService.name);
 
   constructor(private readonly configService: ConfigService) {}
 
-  async sendText(psid: string, body: string): Promise<void> {
-    const accessToken = this.configService.get<string>('FB_PAGE_ACCESS_TOKEN');
+  // accessToken should come from the sending Page's channel_accounts row
+  // (each Page has its own token) — the FB_PAGE_ACCESS_TOKEN env var is only
+  // a fallback for channels connected before per-row tokens existed, or
+  // added without one.
+  async sendText(psid: string, body: string, accessToken?: string): Promise<void> {
+    const token = accessToken || this.configService.get<string>('FB_PAGE_ACCESS_TOKEN');
     const apiVersion = this.configService.get<string>('WA_GRAPH_API_VERSION', 'v21.0');
 
-    if (!accessToken) {
-      this.logger.warn('FB_PAGE_ACCESS_TOKEN not configured — skipping outbound Messenger send');
+    if (!token) {
+      this.logger.warn('No Messenger access token (channel_accounts row or FB_PAGE_ACCESS_TOKEN) — skipping send');
       return;
     }
 
-    const res = await fetch(`https://graph.facebook.com/${apiVersion}/me/messages?access_token=${accessToken}`, {
+    const res = await fetch(`https://graph.facebook.com/${apiVersion}/me/messages?access_token=${token}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -41,15 +45,15 @@ export class MessengerApiService {
   // Best-effort — requires Advanced Access for "Business Asset User Profile
   // Access" to work outside of app admins/testers. Returns undefined (never
   // throws) so a lookup failure just falls back to showing the PSID as name.
-  async getUserProfile(psid: string): Promise<string | undefined> {
-    const accessToken = this.configService.get<string>('FB_PAGE_ACCESS_TOKEN');
+  async getUserProfile(psid: string, accessToken?: string): Promise<string | undefined> {
+    const token = accessToken || this.configService.get<string>('FB_PAGE_ACCESS_TOKEN');
     const apiVersion = this.configService.get<string>('WA_GRAPH_API_VERSION', 'v21.0');
 
-    if (!accessToken) return undefined;
+    if (!token) return undefined;
 
     try {
       const res = await fetch(
-        `https://graph.facebook.com/${apiVersion}/${psid}?fields=first_name,last_name&access_token=${accessToken}`,
+        `https://graph.facebook.com/${apiVersion}/${psid}?fields=first_name,last_name&access_token=${token}`,
       );
 
       if (!res.ok) {

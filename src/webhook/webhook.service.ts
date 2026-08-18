@@ -371,8 +371,11 @@ export class WebhookService {
         const pageId = event.recipient?.id;
         if (!pageId) continue;
 
+        // accessToken is select:false on the entity — list it explicitly to
+        // actually get the Page's own token back (each Page has its own).
         const channelAccount = await this.channelAccountRepo.findOne({
           where: { channel: ChannelType.MESSENGER, externalAccountId: pageId },
+          select: { id: true, channel: true, externalAccountId: true, displayName: true, accessToken: true, createdAt: true },
         });
 
         if (!channelAccount) {
@@ -404,7 +407,7 @@ export class WebhookService {
     // Messenger's webhook payload doesn't include the sender's profile name —
     // only the Page-scoped ID (PSID) — so resolve it via the User Profile API.
     const customer = await this.resolveCustomer(channelAccount.id, senderPsid, undefined, undefined, () =>
-      this.messengerApiService.getUserProfile(senderPsid),
+      this.messengerApiService.getUserProfile(senderPsid, channelAccount.accessToken),
     );
     const conversation = await this.resolveConversation(customer.id, channelAccount);
     await this.captureAdReferralIfPresent(conversation, normalizeMessengerReferral(message.referral));

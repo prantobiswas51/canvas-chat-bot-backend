@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CustomerChannelIdentity } from '../chat/entities/customer-channel-identity.entity';
+import { ChannelAccount } from '../chat/entities/channel-account.entity';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
 import { MessengerModule } from '../messenger/messenger.module';
 import { DispatchService } from './dispatch.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([CustomerChannelIdentity]), WhatsappModule, MessengerModule],
+  imports: [TypeOrmModule.forFeature([CustomerChannelIdentity, ChannelAccount]), WhatsappModule, MessengerModule],
   providers: [DispatchService],
   exports: [DispatchService],
 })
