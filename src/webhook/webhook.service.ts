@@ -218,9 +218,14 @@ export class WebhookService {
     contacts: WhatsappContact[],
     waMessage: WhatsappInboundMessage,
   ): Promise<void> {
+    this.logger.log(`WhatsApp inbound: from=${waMessage.from} type=${waMessage.type} id=${waMessage.id}`);
+
     // De-dupe retried webhook deliveries — Meta resends on any non-2xx or timeout.
     const existing = await this.messageRepo.findOne({ where: { externalMessageId: waMessage.id } });
-    if (existing) return;
+    if (existing) {
+      this.logger.log(`Skipping duplicate WhatsApp message id=${waMessage.id} (already ingested)`);
+      return;
+    }
 
     const contact = contacts.find((c) => c.wa_id === waMessage.from);
     const customer = await this.resolveCustomer(
@@ -400,9 +405,16 @@ export class WebhookService {
       referral?: MessengerReferral;
     },
   ): Promise<void> {
+    this.logger.log(
+      `Messenger inbound: psid=${senderPsid} page=${channelAccount.externalAccountId} mid=${message.mid}`,
+    );
+
     // De-dupe retried webhook deliveries — Meta resends on any non-2xx or timeout.
     const existing = await this.messageRepo.findOne({ where: { externalMessageId: message.mid } });
-    if (existing) return;
+    if (existing) {
+      this.logger.log(`Skipping duplicate Messenger message mid=${message.mid} (already ingested)`);
+      return;
+    }
 
     // Messenger's webhook payload doesn't include the sender's profile name —
     // only the Page-scoped ID (PSID) — so resolve it via the User Profile API.
@@ -484,8 +496,18 @@ export class WebhookService {
       !conversation.assignedModeratorId;
 
     if (aiShouldReply) {
+      this.logger.log(
+        `AI will reply — conversation=${conversation.id} provider=${aiSettings.aiProvider}`,
+      );
       const provider = this.resolveAiProvider(aiSettings.aiProvider);
       await this.generateAndSendAiReply(conversation, customer, aiSettings.customInstructions, provider);
+    } else {
+      const reason = !aiSettings.aiEnabledByDefault
+        ? 'global AI toggle is off'
+        : conversation.status !== ConversationStatus.AI_ACTIVE
+          ? `conversation status is "${conversation.status}"`
+          : 'conversation is assigned to a moderator';
+      this.logger.log(`AI will NOT reply — conversation=${conversation.id} reason="${reason}"`);
     }
   }
 
@@ -609,8 +631,13 @@ export class WebhookService {
       },
     ];
 
+    this.logger.log(`Calling AI (${aiChatService.constructor.name}) for conversation=${conversation.id}...`);
     const reply = await aiChatService.generateReply(systemPrompt, history, tools);
-    if (!reply) return;
+    if (!reply) {
+      this.logger.warn(`AI returned no reply for conversation=${conversation.id} — nothing sent`);
+      return;
+    }
+    this.logger.log(`AI reply generated for conversation=${conversation.id} (${reply.length} chars)`);
 
     const saved = await this.messageRepo.save(
       this.messageRepo.create({

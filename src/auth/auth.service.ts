@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
@@ -7,20 +7,25 @@ import { User, UserRole } from '../users/entities/user.entity';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
   ) {}
 
+  // Never log the password itself — email + outcome only.
   async validateUser(email: string, password: string): Promise<User> {
     const user = await this.usersService.findByEmailWithPassword(email);
     if (!user) {
+      this.logger.warn(`Login failed — no user for email="${email}"`);
       throw new UnauthorizedException('Invalid email or password');
     }
 
     const passwordMatches = await bcrypt.compare(password, user.password);
     if (!passwordMatches) {
+      this.logger.warn(`Login failed — wrong password for email="${email}"`);
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -30,6 +35,7 @@ export class AuthService {
   async login(email: string, password: string) {
     const user = await this.validateUser(email, password);
     const tokens = this.signTokens(user);
+    this.logger.log(`Login succeeded — email="${email}" role=${user.role}`);
     return { user, tokens };
   }
 
@@ -37,6 +43,7 @@ export class AuthService {
   // sends. Real role assignment only happens via an authenticated admin
   // using POST /users (UsersService.create) from the Users page.
   async signup(name: string, email: string, password: string): Promise<User> {
+    this.logger.log(`Signup — email="${email}" (assigned role=member)`);
     return this.usersService.create({ name, email, password, role: UserRole.MEMBER });
   }
 

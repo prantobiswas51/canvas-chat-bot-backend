@@ -26,8 +26,14 @@ export class DispatchService {
   // Best-effort — the message is always saved locally by the caller first, so
   // a delivery failure here is logged, never thrown.
   async sendReply(conversation: Conversation, content: string): Promise<void> {
-    if (!conversation.channelAccountId) return;
-    if (conversation.channel !== ChannelType.WHATSAPP && conversation.channel !== ChannelType.MESSENGER) return;
+    if (!conversation.channelAccountId) {
+      this.logger.warn(`sendReply skipped — conversation=${conversation.id} has no channelAccountId`);
+      return;
+    }
+    if (conversation.channel !== ChannelType.WHATSAPP && conversation.channel !== ChannelType.MESSENGER) {
+      this.logger.log(`sendReply skipped — channel="${conversation.channel}" has no outbound API (e.g. website widget)`);
+      return;
+    }
 
     const identity = await this.identityRepo.findOne({
       where: { customerId: conversation.customerId, channelAccountId: conversation.channelAccountId },
@@ -39,6 +45,10 @@ export class DispatchService {
       );
       return;
     }
+
+    this.logger.log(
+      `Dispatching ${conversation.channel} reply — conversation=${conversation.id} to=${identity.externalUserId} (${content.length} chars)`,
+    );
 
     try {
       if (conversation.channel === ChannelType.WHATSAPP) {
@@ -52,6 +62,7 @@ export class DispatchService {
         });
         await this.messengerApiService.sendText(identity.externalUserId, content, channelAccount?.accessToken);
       }
+      this.logger.log(`Delivered ${conversation.channel} reply — conversation=${conversation.id}`);
     } catch (err) {
       this.logger.error(`Failed to deliver ${conversation.channel} message: ${(err as Error).message}`);
     }

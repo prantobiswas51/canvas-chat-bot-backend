@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ChannelAccount } from '../chat/entities/channel-account.entity';
@@ -6,6 +6,8 @@ import { CreateChannelDto } from './dto/create-channel.dto';
 
 @Injectable()
 export class ChannelsService {
+  private readonly logger = new Logger(ChannelsService.name);
+
   constructor(
     @InjectRepository(ChannelAccount)
     private readonly channelAccountRepo: Repository<ChannelAccount>,
@@ -27,12 +29,16 @@ export class ChannelsService {
     if (existing) {
       existing.displayName = dto.displayName;
       if (dto.accessToken) existing.accessToken = dto.accessToken;
+      this.logger.log(
+        `Updated channel ${dto.channel}/${dto.externalAccountId} (id=${existing.id})` +
+          (dto.accessToken ? ' incl. new access token' : ''),
+      );
       // @Exclude() on ChannelAccount.accessToken strips it from the HTTP
       // response automatically via the global ClassSerializerInterceptor.
       return this.channelAccountRepo.save(existing);
     }
 
-    return this.channelAccountRepo.save(
+    const created = await this.channelAccountRepo.save(
       this.channelAccountRepo.create({
         channel: dto.channel,
         externalAccountId: dto.externalAccountId,
@@ -40,10 +46,13 @@ export class ChannelsService {
         accessToken: dto.accessToken,
       }),
     );
+    this.logger.log(`Connected new channel ${dto.channel}/${dto.externalAccountId} (id=${created.id})`);
+    return created;
   }
 
   async remove(id: string): Promise<void> {
     const result = await this.channelAccountRepo.delete(id);
     if (!result.affected) throw new NotFoundException('Channel not found');
+    this.logger.log(`Removed channel id=${id}`);
   }
 }
