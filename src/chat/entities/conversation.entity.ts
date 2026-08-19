@@ -59,9 +59,11 @@ export class Conversation {
   @Column({ type: 'enum', enum: ConversationStatus, default: ConversationStatus.AI_ACTIVE })
   status: ConversationStatus;
 
-  // Plain FK (no relation object) to avoid a cross-module import cycle with UsersModule.
+  // Plain FK (no relation object) to avoid a cross-module import cycle with
+  // UsersModule. Explicitly nullable (not just optional) so ChatService can
+  // set it to null to clear an assignment and hand the chat back to the AI.
   @Column({ name: 'assigned_moderator_id', type: 'uuid', nullable: true })
-  assignedModeratorId?: string;
+  assignedModeratorId?: string | null;
 
   @Column({ name: 'last_message', type: 'text', nullable: true })
   lastMessage?: string;

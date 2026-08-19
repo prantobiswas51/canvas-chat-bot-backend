@@ -1,7 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Conversation } from './entities/conversation.entity';
+import { Conversation, ConversationStatus } from './entities/conversation.entity';
 import { Message, MessageSender } from './entities/message.entity';
 import { SendMessageDto } from './dto/send-message.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
@@ -11,6 +11,8 @@ import { toConversationDto, toMessageDto } from './chat.mappers';
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(
     @InjectRepository(Conversation)
     private readonly conversationRepo: Repository<Conversation>,
@@ -93,9 +95,22 @@ export class ChatService {
     return { id: saved.id, status: saved.status };
   }
 
-  async assignModerator(conversationId: string, moderatorId: string) {
+  async assignModerator(conversationId: string, moderatorId: string | null | undefined) {
     const conversation = await this.assertConversationExists(conversationId);
-    conversation.assignedModeratorId = moderatorId;
+    conversation.assignedModeratorId = moderatorId ?? null;
+
+    // No moderator = handing the conversation back to the AI. Also reset
+    // status to AI_ACTIVE in case it was left in HUMAN_MODERATOR mode (e.g.
+    // via "Take Over") — otherwise clearing the assignment alone wouldn't be
+    // enough to make the AI actually start replying again (saveInboundMessage
+    // requires both: status === AI_ACTIVE AND no assignedModeratorId).
+    if (!moderatorId) {
+      conversation.status = ConversationStatus.AI_ACTIVE;
+      this.logger.log(`Conversation ${conversationId} reassigned to AI (unassigned + status=ai_active)`);
+    } else {
+      this.logger.log(`Conversation ${conversationId} assigned to moderator=${moderatorId}`);
+    }
+
     const saved = await this.conversationRepo.save(conversation);
 
     const conversationWithCustomer = await this.conversationRepo.findOne({
@@ -106,7 +121,7 @@ export class ChatService {
       this.chatGateway.emitConversationUpdated(toConversationDto(conversationWithCustomer));
     }
 
-    return { id: saved.id, assignedModeratorId: saved.assignedModeratorId };
+    return { id: saved.id, assignedModeratorId: saved.assignedModeratorId, status: saved.status };
   }
 
   private async assertConversationExists(conversationId: string): Promise<Conversation> {

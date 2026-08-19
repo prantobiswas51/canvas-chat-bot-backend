@@ -28,6 +28,7 @@ export class ChatController {
     return this.chatService.updateStatus(id, dto);
   }
 
+  // moderatorId omitted or null hands the conversation back to the AI.
   @Patch(':id/assign')
   assignModerator(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignModeratorDto) {
     return this.chatService.assignModerator(id, dto.moderatorId);
