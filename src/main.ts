@@ -1,3 +1,12 @@
+// MUST be the very first import. ChatGateway reads process.env.FRONTEND_ORIGIN
+// at module-load time (in its @WebSocketGateway decorator), and it gets
+// imported transitively (AppModule -> ChatModule -> RealtimeModule ->
+// ChatGateway) *before* AppModule's own body runs ConfigModule.forRoot() —
+// so without this, .env hasn't been loaded yet when that decorator reads
+// process.env, and it silently falls back to the localhost default even in
+// production. Loading dotenv here, before anything else, guarantees
+// process.env is fully populated before any other file is even imported.
+import 'dotenv/config';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ClassSerializerInterceptor, Logger, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
