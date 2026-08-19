@@ -116,7 +116,13 @@ export class GeminiService {
 
         if (!res.ok) {
           const errText = await res.text();
-          this.logger.error(`Gemini generateContent failed (${res.status}): ${errText}`);
+          // Google's JSON body is often just {code, message, status} with no
+          // detail on *which* quota was hit — Retry-After (and sometimes
+          // other rate-limit headers) can carry more, so log those too.
+          const retryAfter = res.headers.get('retry-after');
+          this.logger.error(
+            `Gemini generateContent failed (${res.status})${retryAfter ? ` retry-after=${retryAfter}s` : ''}: ${errText}`,
+          );
           return undefined;
         }
 
