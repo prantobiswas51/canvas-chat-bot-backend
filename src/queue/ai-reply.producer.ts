@@ -8,15 +8,20 @@ export interface AiReplyJobData {
   customerId: string;
 }
 
-// Single attempt, no retry — a 429/5xx immediately fails the job (see
-// AiReplyProcessor's onFailed handler). Retrying here used to mean a single
-// rate-limited message could fire up to 5 real requests at the provider
-// (each retry is its own HTTP call), which only makes an active rate/spend
-// limit worse instead of recovering from it. If you want retries back,
-// re-add `attempts`/`backoff` here — but fix the root cause (concurrency,
-// RPM ceiling) first.
+// 3 attempts with exponential backoff (5s, 10s, 20s between tries). This
+// used to be a single attempt — a naive retry loop that just re-hits the
+// same overloaded/rate-limited model amplifies the problem. Two things
+// changed that: (1) GeminiService now hops across a fallback model chain
+// *within* a single attempt (see gemini.service.ts), so a job only reaches
+// this retry layer once every model has already failed — i.e. a real,
+// broad outage, not one busy model. (2) a genuine 503 "high demand" is a
+// transient Google-side capacity blip, not a self-inflicted spend/rate
+// ceiling — waiting a few seconds and trying again (on top of the model
+// hop) is exactly the right response. Still bounded at 3 so a real 429
+// spend-limit outage doesn't get hammered indefinitely.
 const JOB_OPTS = {
-  attempts: 1,
+  attempts: 3,
+  backoff: { type: 'exponential' as const, delay: 5000 },
   removeOnComplete: { age: 3600, count: 1000 },
   removeOnFail: { age: 86400 },
 };

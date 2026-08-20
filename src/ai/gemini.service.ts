@@ -69,6 +69,15 @@ interface GeminiGenerateContentResponse {
 
 const MAX_TOOL_ROUNDS = 3;
 
+// Tried in order after the configured primary model, whenever a call fails
+// with a *retryable* error (429 rate/spend limit, 5xx, or a 503 "model
+// overloaded" — the exact failure that prompted this) — a specific model
+// being overloaded doesn't mean every model is, so hopping to a sibling
+// model within the same job attempt recovers a reply immediately instead of
+// failing the whole job and waiting on BullMQ's backoff. Overridable via
+// GEMINI_FALLBACK_MODELS (comma-separated) if you want a different order.
+const DEFAULT_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
+
 // Uses the classic generateContent API (confirmed by Google as "fully
 // supported" alongside the newer Interactions API) — plain text generation,
 // with optional function/tool calling when `tools` is passed in.
@@ -90,13 +99,21 @@ export class GeminiService {
 
   constructor(private readonly configService: ConfigService) {}
 
+  private modelChain(): string[] {
+    const primary = this.configService.get<string>('GEMINI_MODEL', 'gemini-2.5-flash');
+    const fallbacksRaw = this.configService.get<string>('GEMINI_FALLBACK_MODELS');
+    const fallbacks = fallbacksRaw
+      ? fallbacksRaw.split(',').map((m) => m.trim()).filter(Boolean)
+      : DEFAULT_FALLBACK_MODELS;
+    return [primary, ...fallbacks.filter((m) => m !== primary)];
+  }
+
   async generateReply(
     systemPrompt: string,
     history: GeminiHistoryTurn[],
     tools: GeminiTool[] = [],
   ): Promise<string | undefined> {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
-    const model = this.configService.get<string>('GEMINI_MODEL', 'gemini-2.5-flash');
 
     if (!apiKey || apiKey === 'your_gemini_api_key') {
       this.logger.warn('GEMINI_API_KEY not configured — skipping AI reply');
@@ -105,6 +122,36 @@ export class GeminiService {
 
     if (history.length === 0) return undefined;
 
+    const chain = this.modelChain();
+    let lastError: unknown;
+
+    for (const model of chain) {
+      try {
+        return await this.generateReplyWithModel(systemPrompt, history, tools, apiKey, model);
+      } catch (err) {
+        if (!(err instanceof RetryableAiError)) throw err;
+        lastError = err;
+        const isLast = model === chain[chain.length - 1];
+        if (!isLast) {
+          this.logger.warn(`Model "${model}" hit a transient error — falling back to next model in chain`);
+        }
+      }
+    }
+
+    // Every model in the chain failed transiently — this is now a real
+    // outage worth letting the BullMQ job retry (with backoff) for, not
+    // something another model swap can fix.
+    this.logger.error(`All ${chain.length} model(s) in fallback chain failed transiently — giving up for this attempt`);
+    throw lastError instanceof RetryableAiError ? lastError : new RetryableAiError('All Gemini models failed');
+  }
+
+  private async generateReplyWithModel(
+    systemPrompt: string,
+    history: GeminiHistoryTurn[],
+    tools: GeminiTool[],
+    apiKey: string,
+    model: string,
+  ): Promise<string | undefined> {
     let contents: GeminiContent[] = history.map((turn) => ({ role: turn.role, parts: turnToParts(turn) }));
     const toolsPayload = tools.length
       ? [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }]

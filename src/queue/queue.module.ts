@@ -4,9 +4,11 @@ import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Conversation } from '../chat/entities/conversation.entity';
 import { Customer } from '../chat/entities/customer.entity';
+import { Message } from '../chat/entities/message.entity';
 import { AiModule } from '../ai/ai.module';
 import { AiReplyProducer } from './ai-reply.producer';
 import { AiReplyProcessor } from './ai-reply.processor';
+import { StaleReplySweepService } from './stale-reply-sweep.service';
 
 // The "Redis / Queue" + "AI Worker" boxes in the pipeline diagram. Webhook
 // ingestion (WebhookService) only ever talks to AiReplyProducer — it never
@@ -29,10 +31,10 @@ import { AiReplyProcessor } from './ai-reply.processor';
       }),
     }),
     BullModule.registerQueue({ name: 'ai-reply' }),
-    TypeOrmModule.forFeature([Conversation, Customer]),
+    TypeOrmModule.forFeature([Conversation, Customer, Message]),
     AiModule,
   ],
-  providers: [AiReplyProducer, AiReplyProcessor],
+  providers: [AiReplyProducer, AiReplyProcessor, StaleReplySweepService],
   exports: [AiReplyProducer],
 })
 export class QueueModule {}

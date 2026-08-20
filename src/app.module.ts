@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { WebhookModule } from './webhook/webhook.module';
@@ -13,6 +14,10 @@ import { OrdersModule } from './orders/orders.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Registers Nest's SchedulerRegistry once, globally — required for any
+    // @Cron()-decorated method anywhere in the app to actually run (see
+    // StaleReplySweepService in QueueModule).
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
