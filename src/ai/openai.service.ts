@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GeminiHistoryTurn, GeminiTool, GeminiToolParameterSchema } from './gemini.service';
+import { RetryableAiError } from './retryable-ai-error';
 
 interface OpenAiContentPart {
   type: 'text' | 'image_url';
@@ -128,12 +129,17 @@ export class OpenAiService {
         data = (await res.json()) as OpenAiChatCompletionResponse;
 
         if (!res.ok) {
-          this.logger.error(`OpenAI chat completion failed (${res.status}): ${JSON.stringify(data)}`);
+          const msg = `OpenAI chat completion failed (${res.status}): ${JSON.stringify(data)}`;
+          this.logger.error(msg);
+          // 429/5xx are transient — let the queue processor retry with
+          // backoff instead of dropping the reply.
+          if (res.status === 429 || res.status >= 500) throw new RetryableAiError(msg);
           return undefined;
         }
       } catch (err) {
+        if (err instanceof RetryableAiError) throw err;
         this.logger.error(`OpenAI request failed: ${(err as Error).message}`);
-        return undefined;
+        throw new RetryableAiError((err as Error).message);
       }
 
       const message = data.choices?.[0]?.message;

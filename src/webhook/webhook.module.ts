@@ -11,10 +11,8 @@ import { Message } from '../chat/entities/message.entity';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { MessengerModule } from '../messenger/messenger.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
-import { DispatchModule } from '../dispatch/dispatch.module';
 import { AiModule } from '../ai/ai.module';
-import { ProductsModule } from '../products/products.module';
-import { OrdersModule } from '../orders/orders.module';
+import { QueueModule } from '../queue/queue.module';
 
 @Module({
   imports: [
@@ -22,10 +20,8 @@ import { OrdersModule } from '../orders/orders.module';
     RealtimeModule,
     MessengerModule,
     WhatsappModule,
-    DispatchModule,
     AiModule,
-    ProductsModule,
-    OrdersModule,
+    QueueModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookService, WhatsappSignatureGuard],

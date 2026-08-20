@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RetryableAiError } from './retryable-ai-error';
 
 export interface GeminiHistoryImage {
   mimeType: string;
@@ -120,16 +121,23 @@ export class GeminiService {
           // detail on *which* quota was hit — Retry-After (and sometimes
           // other rate-limit headers) can carry more, so log those too.
           const retryAfter = res.headers.get('retry-after');
-          this.logger.error(
-            `Gemini generateContent failed (${res.status})${retryAfter ? ` retry-after=${retryAfter}s` : ''}: ${errText}`,
-          );
+          const msg = `Gemini generateContent failed (${res.status})${retryAfter ? ` retry-after=${retryAfter}s` : ''}: ${errText}`;
+          this.logger.error(msg);
+          // 429 (rate/spend limit) and 5xx (provider outage) are transient —
+          // let the queue processor retry with backoff instead of dropping
+          // the reply. Anything else (400 bad request, 401/403 auth) is a
+          // real problem that won't fix itself on retry.
+          if (res.status === 429 || res.status >= 500) throw new RetryableAiError(msg);
           return undefined;
         }
 
         data = (await res.json()) as GeminiGenerateContentResponse;
       } catch (err) {
+        if (err instanceof RetryableAiError) throw err;
+        // Network-level failure (timeout, DNS, connection reset) — also
+        // transient, so treat it the same as a 429/5xx.
         this.logger.error(`Gemini request failed: ${(err as Error).message}`);
-        return undefined;
+        throw new RetryableAiError((err as Error).message);
       }
 
       const candidate = data.candidates?.[0];

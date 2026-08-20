@@ -10,15 +10,9 @@ import { ChatGateway } from '../realtime/chat.gateway';
 import { toConversationDto, toMessageDto } from '../chat/chat.mappers';
 import { MessengerApiService } from '../messenger/messenger-api.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
-import { DispatchService } from '../dispatch/dispatch.service';
-import { GeminiService, GeminiTool, GeminiHistoryImage } from '../ai/gemini.service';
-import { OpenAiService } from '../ai/openai.service';
-import { ClaudeService } from '../ai/claude.service';
 import { AiSettingsService } from '../ai/ai-settings.service';
 import { TranscriptionService } from '../ai/transcription.service';
-import type { AiChatService } from '../ai/ai-chat.interface';
-import { ProductsApiService } from '../products/products-api.service';
-import { OrdersService } from '../orders/orders.service';
+import { AiReplyProducer } from '../queue/ai-reply.producer';
 
 // Friendlier than showing the raw provider ID (e.g. a 20-digit Messenger PSID)
 // while the real name can't be resolved yet.
@@ -28,30 +22,6 @@ function fallbackCustomerName(externalUserId: string): string {
 
 function isUnresolvedName(name: string, externalUserId: string): boolean {
   return name === externalUserId || name === fallbackCustomerName(externalUserId);
-}
-
-const IMAGE_EXTENSION_MIME_TYPES: Record<string, string> = {
-  png: 'image/png',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-};
-
-// Converts a stored MessageAttachment into what Gemini needs to actually
-// see the picture: inline base64 data (WhatsApp's downloaded images, stored
-// as a data: URI) or a fileUri Gemini fetches itself (Messenger's CDN links).
-function toGeminiImage(attachment?: MessageAttachment): GeminiHistoryImage | undefined {
-  if (!attachment || attachment.type !== 'image') return undefined;
-
-  const dataUriMatch = attachment.url.match(/^data:([^;]+);base64,(.+)$/);
-  if (dataUriMatch) {
-    return { mimeType: dataUriMatch[1], data: dataUriMatch[2] };
-  }
-
-  const extension = attachment.url.split('.').pop()?.split(/[?#]/)[0]?.toLowerCase();
-  const mimeType = (extension && IMAGE_EXTENSION_MIME_TYPES[extension]) || 'image/jpeg';
-  return { mimeType, fileUri: attachment.url };
 }
 
 interface WhatsappContact {
@@ -174,14 +144,9 @@ export class WebhookService {
     private readonly chatGateway: ChatGateway,
     private readonly messengerApiService: MessengerApiService,
     private readonly whatsappApiService: WhatsappApiService,
-    private readonly dispatchService: DispatchService,
-    private readonly geminiService: GeminiService,
-    private readonly openAiService: OpenAiService,
-    private readonly claudeService: ClaudeService,
-    private readonly productsApiService: ProductsApiService,
-    private readonly ordersService: OrdersService,
     private readonly aiSettingsService: AiSettingsService,
     private readonly transcriptionService: TranscriptionService,
+    private readonly aiReplyProducer: AiReplyProducer,
   ) {}
 
   async handleWhatsappEvent(body: WhatsappWebhookPayload): Promise<void> {
@@ -497,10 +462,15 @@ export class WebhookService {
 
     if (aiShouldReply) {
       this.logger.log(
-        `AI will reply — conversation=${conversation.id} provider=${aiSettings.aiProvider}`,
+        `Queuing AI reply — conversation=${conversation.id} provider=${aiSettings.aiProvider}`,
       );
-      const provider = this.resolveAiProvider(aiSettings.aiProvider);
-      await this.generateAndSendAiReply(conversation, customer, aiSettings.customInstructions, provider);
+      // Enqueue instead of generating inline — this is the point where the
+      // webhook handler used to block for however long the LLM round-trip
+      // took. Now it just pushes a job onto Redis (fast) and returns, so
+      // Meta's webhook ack is never at risk of timing out, and the AI
+      // Worker's capped concurrency (see AiReplyProcessor) smooths out
+      // bursts instead of firing one AI call per message simultaneously.
+      await this.aiReplyProducer.enqueue({ conversationId: conversation.id, customerId: customer.id });
     } else {
       const reason = !aiSettings.aiEnabledByDefault
         ? 'global AI toggle is off'
@@ -509,154 +479,6 @@ export class WebhookService {
           : 'conversation is assigned to a moderator';
       this.logger.log(`AI will NOT reply — conversation=${conversation.id} reason="${reason}"`);
     }
-  }
-
-  // Settings → AI Instructions → provider dropdown picks this live, per
-  // message — no restart needed since it's read from the DB each time
-  // rather than resolved once at boot.
-  private resolveAiProvider(provider: string): AiChatService {
-    if (provider === 'claude') return this.claudeService;
-    if (provider === 'gemini') return this.geminiService;
-    return this.openAiService;
-  }
-
-  // Only fires when the conditions in saveInboundMessage's aiShouldReply
-  // check pass; a human agent's own reply (via ChatService.sendAgentMessage)
-  // never routes through this.
-  private async generateAndSendAiReply(
-    conversation: Conversation,
-    customer: Customer,
-    customInstructions: string | undefined,
-    aiChatService: AiChatService,
-  ): Promise<void> {
-    const recent = await this.messageRepo.find({
-      where: { conversationId: conversation.id },
-      order: { createdAt: 'DESC' },
-      take: 12,
-    });
-
-    const history = recent
-      .slice()
-      .reverse()
-      .map((m) => ({
-        role: m.senderType === MessageSender.CUSTOMER ? ('user' as const) : ('model' as const),
-        text: m.content,
-        // Only the customer's own photos are worth Gemini "seeing" — an
-        // agent/AI message never has an attachment that needs interpreting.
-        image: m.senderType === MessageSender.CUSTOMER ? toGeminiImage(m.attachment) : undefined,
-      }));
-
-    const baseSystemPrompt =
-      'You are Canvas AI Bot, a friendly customer support assistant for Canvas Art Supplies, an online art & canvas ' +
-      'supplies store. Keep replies short (1-3 sentences), warm, and helpful. Match the language/style the customer ' +
-      "used (English, Bengali, or Banglish). Use the search_products tool whenever the customer asks about a specific " +
-      "product, SKU, price, or stock — never guess those details. If the tool errors or a product isn't found, say a " +
-      "human teammate will confirm shortly instead of making something up. Use the create_order tool once the " +
-      'customer has clearly decided to buy a specific product (SKU) and has given you their full name, delivery ' +
-      'address, and phone number — confirm these three details back to the customer before calling the tool if any ' +
-      "are missing or unclear. Never invent a name, address, or phone number. After the tool succeeds, tell the " +
-      'customer their invoice ID and that the order is being processed. Customers may send photos — of a product ' +
-      'they want, a damaged item, a receipt, or their own artwork. Look at the image and respond to what it ' +
-      "actually shows; if it's a product, use search_products to match it up rather than guessing details. " +
-      'Customers may also send voice notes — these arrive as a 🎤 message with the transcribed text in quotes; ' +
-      'treat that transcript exactly like a typed message and reply normally (transcription is occasionally ' +
-      "imperfect, so if it's garbled or unclear, just ask the customer to clarify or type it instead).";
-
-    // Team-editable additions (Settings → AI Instructions) layered on top of
-    // the base behavior above — store policies, tone tweaks, extra rules, etc.
-    const systemPrompt = customInstructions?.trim()
-      ? `${baseSystemPrompt}\n\nAdditional instructions from the store team (follow these too):\n${customInstructions.trim()}`
-      : baseSystemPrompt;
-
-    const tools: GeminiTool[] = [
-      {
-        name: 'search_products',
-        description:
-          "Searches the store's product catalog by SKU/product code or keyword (e.g. 'PMPP6001' or 'acrylic paint set'). " +
-          'Returns matching product(s) with details such as name, price, stock, and description.',
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            query: { type: 'STRING', description: 'Product SKU, code, name, or search keyword' },
-          },
-          required: ['query'],
-        },
-        execute: (args) => this.productsApiService.search(String(args.query ?? '')),
-      },
-      {
-        name: 'create_order',
-        description:
-          'Creates a new order once the customer has confirmed they want to buy a specific product and provided ' +
-          'their full name, delivery address, and phone number. Do not guess or invent any of these — ask the ' +
-          "customer if anything is missing. Returns the created order's invoice ID.",
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            name: { type: 'STRING', description: "Customer's full name for the order" },
-            address: { type: 'STRING', description: 'Delivery address' },
-            phone: { type: 'STRING', description: 'Contact phone number' },
-            productSku: { type: 'STRING', description: 'SKU of the product being ordered (from search_products)' },
-            quantity: { type: 'INTEGER', description: 'Quantity ordered — defaults to 1 if not specified' },
-            notes: { type: 'STRING', description: 'Any extra notes about the order, e.g. color/size preference' },
-          },
-          required: ['name', 'address', 'phone', 'productSku'],
-        },
-        execute: async (args) => {
-          const order = await this.ordersService.createOrder({
-            customerName: String(args.name ?? ''),
-            address: String(args.address ?? ''),
-            phone: String(args.phone ?? ''),
-            productSku: String(args.productSku ?? ''),
-            quantity: args.quantity ? Number(args.quantity) : 1,
-            notes: args.notes ? String(args.notes) : undefined,
-            conversationId: conversation.id,
-            customerId: customer.id,
-            createdByAi: true,
-          });
-
-          // Visible marker in the thread so a human moderator can spot
-          // AI-placed orders at a glance without re-reading the conversation.
-          const systemMessage = await this.messageRepo.save(
-            this.messageRepo.create({
-              conversationId: conversation.id,
-              senderType: MessageSender.SYSTEM,
-              senderName: 'System',
-              content: `🧾 Order ${order.invoiceId} created by AI Bot — SKU ${order.productSku} × ${order.quantity}`,
-            }),
-          );
-          this.chatGateway.emitNewMessage(toMessageDto(systemMessage));
-
-          return { invoiceId: order.invoiceId, status: order.status };
-        },
-      },
-    ];
-
-    this.logger.log(`Calling AI (${aiChatService.constructor.name}) for conversation=${conversation.id}...`);
-    const reply = await aiChatService.generateReply(systemPrompt, history, tools);
-    if (!reply) {
-      this.logger.warn(`AI returned no reply for conversation=${conversation.id} — nothing sent`);
-      return;
-    }
-    this.logger.log(`AI reply generated for conversation=${conversation.id} (${reply.length} chars)`);
-
-    const saved = await this.messageRepo.save(
-      this.messageRepo.create({
-        conversationId: conversation.id,
-        senderType: MessageSender.AI_BOT,
-        senderName: 'Canvas AI Bot',
-        content: reply,
-      }),
-    );
-
-    conversation.lastMessage = reply;
-    conversation.lastMessageAt = saved.createdAt;
-    await this.conversationRepo.save(conversation);
-
-    this.chatGateway.emitNewMessage(toMessageDto(saved));
-    conversation.customer = customer;
-    this.chatGateway.emitConversationUpdated(toConversationDto(conversation));
-
-    await this.dispatchService.sendReply(conversation, reply);
   }
 
   private async resolveConversation(customerId: string, channelAccount: ChannelAccount): Promise<Conversation> {

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GeminiHistoryTurn, GeminiTool, GeminiToolParameterSchema } from './gemini.service';
+import { RetryableAiError } from './retryable-ai-error';
 
 interface ClaudeContentBlock {
   type: 'text' | 'image' | 'tool_use' | 'tool_result';
@@ -114,12 +115,17 @@ export class ClaudeService {
         data = (await res.json()) as ClaudeResponse;
 
         if (!res.ok) {
-          this.logger.error(`Claude messages request failed (${res.status}): ${JSON.stringify(data)}`);
+          const msg = `Claude messages request failed (${res.status}): ${JSON.stringify(data)}`;
+          this.logger.error(msg);
+          // 429/5xx are transient — let the queue processor retry with
+          // backoff instead of dropping the reply.
+          if (res.status === 429 || res.status >= 500) throw new RetryableAiError(msg);
           return undefined;
         }
       } catch (err) {
+        if (err instanceof RetryableAiError) throw err;
         this.logger.error(`Claude request failed: ${(err as Error).message}`);
-        return undefined;
+        throw new RetryableAiError((err as Error).message);
       }
 
       const content = data.content ?? [];

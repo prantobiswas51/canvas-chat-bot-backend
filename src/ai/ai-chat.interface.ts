@@ -1,8 +1,13 @@
 import { GeminiHistoryTurn, GeminiTool } from './gemini.service';
 
-// Shared contract both GeminiService and OpenAiService implement — lets
-// webhook.service.ts stay provider-agnostic behind the AI_CHAT_SERVICE
-// token (see ai.module.ts / AI_PROVIDER env var).
+// Shared contract GeminiService/OpenAiService/ClaudeService all implement —
+// lets AiReplyService (src/ai/ai-reply.service.ts) stay provider-agnostic.
+//
+// Resolves to `undefined` for a final, non-retryable outcome (missing API
+// key, empty/safety-blocked response, non-transient 4xx). Throws
+// RetryableAiError (see retryable-ai-error.ts) for transient failures —
+// 429 rate/spend limits, 5xx provider outages, network errors — which the
+// AI-reply queue processor catches to trigger a BullMQ retry with backoff.
 export interface AiChatService {
   generateReply(
     systemPrompt: string,
