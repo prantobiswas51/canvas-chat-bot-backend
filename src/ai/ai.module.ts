@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { GeminiService } from './gemini.service';
-import { OpenAiService } from './openai.service';
-import { ClaudeService } from './claude.service';
 import { TranscriptionService } from './transcription.service';
 import { AiReplyService } from './ai-reply.service';
 import { AiSettings } from './entities/ai-settings.entity';
@@ -15,10 +13,8 @@ import { DispatchModule } from '../dispatch/dispatch.module';
 import { ProductsModule } from '../products/products.module';
 import { OrdersModule } from '../orders/orders.module';
 
-// Provider selection is dynamic per-message (see webhook.service.ts, which
-// reads AiSettings.aiProvider on every inbound message and picks whichever
-// of these three services to call) rather than resolved once at boot, so
-// the Settings page dropdown takes effect immediately without a restart.
+// Gemini-only right now (OpenAI/Claude removed for debugging — see
+// GeminiService's call-counter logging and AiReplyService's step logs).
 @Module({
   imports: [
     TypeOrmModule.forFeature([AiSettings, Conversation, Message]),
@@ -28,7 +24,7 @@ import { OrdersModule } from '../orders/orders.module';
     OrdersModule,
   ],
   controllers: [AiSettingsController],
-  providers: [GeminiService, OpenAiService, ClaudeService, TranscriptionService, AiSettingsService, AiReplyService],
-  exports: [GeminiService, OpenAiService, ClaudeService, TranscriptionService, AiSettingsService, AiReplyService],
+  providers: [GeminiService, TranscriptionService, AiSettingsService, AiReplyService],
+  exports: [GeminiService, TranscriptionService, AiSettingsService, AiReplyService],
 })
 export class AiModule {}

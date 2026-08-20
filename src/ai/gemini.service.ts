@@ -4,11 +4,13 @@ import { RetryableAiError } from './retryable-ai-error';
 
 export interface GeminiHistoryImage {
   mimeType: string;
-  // Exactly one of these — inline base64 data (WhatsApp's downloaded media)
-  // or a publicly-fetchable URL (Messenger's CDN attachment links, which
-  // Gemini fetches itself server-side).
-  data?: string;
-  fileUri?: string;
+  // Always inline base64 data now, regardless of platform — WhatsApp and
+  // Messenger images are both downloaded and base64-encoded before ever
+  // reaching this type (see AiReplyService.resolveGeminiImage). There used
+  // to be a fileUri alternative that let Gemini fetch the image itself
+  // server-side, but that was unreliable for Messenger's CDN links and has
+  // been removed — every image is downloaded by this app and sent inline.
+  data: string;
 }
 
 export interface GeminiHistoryTurn {
@@ -38,7 +40,6 @@ export interface GeminiTool {
 interface GeminiPart {
   text?: string;
   inlineData?: { mimeType: string; data: string };
-  fileData?: { mimeType: string; fileUri: string };
   functionCall?: { name: string; args?: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
@@ -47,8 +48,6 @@ function turnToParts(turn: GeminiHistoryTurn): GeminiPart[] {
   const parts: GeminiPart[] = [];
   if (turn.image?.data) {
     parts.push({ inlineData: { mimeType: turn.image.mimeType, data: turn.image.data } });
-  } else if (turn.image?.fileUri) {
-    parts.push({ fileData: { mimeType: turn.image.mimeType, fileUri: turn.image.fileUri } });
   }
   // Text part last so a caption reads naturally after the image, and so a
   // turn with only an image still gets a placeholder part if text is empty.
@@ -77,6 +76,18 @@ const MAX_TOOL_ROUNDS = 3;
 export class GeminiService {
   private readonly logger = new Logger(GeminiService.name);
 
+  // Shared across the whole process (this service is a singleton) — total
+  // count of actual HTTP requests made to Gemini's API since this process
+  // started. Logged on every call so you can compare against Google AI
+  // Studio's usage/billing dashboard and see exactly how many requests this
+  // app itself is responsible for, independent of whatever Google says.
+  private static totalApiCalls = 0;
+
+  private static nextCallNumber(): number {
+    GeminiService.totalApiCalls += 1;
+    return GeminiService.totalApiCalls;
+  }
+
   constructor(private readonly configService: ConfigService) {}
 
   async generateReply(
@@ -104,6 +115,9 @@ export class GeminiService {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       let data: GeminiGenerateContentResponse;
       try {
+        const callNumber = GeminiService.nextCallNumber();
+        this.logger.log(`Gemini API call #${callNumber} (generateContent, round=${round}, model=${model})`);
+
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -199,6 +213,9 @@ export class GeminiService {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     try {
+      const callNumber = GeminiService.nextCallNumber();
+      this.logger.log(`Gemini API call #${callNumber} (transcribeAudio, model=${model})`);
+
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

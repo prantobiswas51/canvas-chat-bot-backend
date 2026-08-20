@@ -9,23 +9,54 @@ import { toConversationDto, toMessageDto } from '../chat/chat.mappers';
 import { DispatchService } from '../dispatch/dispatch.service';
 import { ProductsApiService } from '../products/products-api.service';
 import { OrdersService } from '../orders/orders.service';
-import { GeminiService, GeminiTool, GeminiHistoryImage } from './gemini.service';
-import { OpenAiService } from './openai.service';
-import { ClaudeService } from './claude.service';
-import type { AiChatService } from './ai-chat.interface';
+import { GeminiService, GeminiTool, GeminiHistoryImage, GeminiHistoryTurn } from './gemini.service';
 
-const IMAGE_EXTENSION_MIME_TYPES: Record<string, string> = {
-  png: 'image/png',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-};
+// Everything below is deterministic, code-only trimming of what gets sent
+// to Gemini per reply — no extra AI call involved (a real conversation
+// summary would need Gemini to generate it, which means *more* calls, not
+// fewer, so this deliberately isn't that). Three independent caps:
+
+// 1. How many past messages get sent as context at all. Fewer turns =
+// smaller request. Older messages beyond this just aren't part of the
+// AI's memory for that reply — the full thread is still visible to human
+// moderators in the chat UI regardless, this only affects what Gemini sees.
+const HISTORY_TURN_LIMIT = 8;
+
+// 2. How many of the most recent customer-image turns actually get the
+// image bytes attached, out of the history window above. Older photos
+// still show up as text ("📷 Photo" is part of the message content), just
+// without the pixels re-sent — without this cap, one photo sitting in the
+// lookback window gets re-downloaded/re-uploaded to Gemini on every single
+// subsequent reply in that conversation until it ages out, multiplying
+// image data cost for no benefit once the conversation's moved on.
+const MAX_IMAGE_HISTORY_TURNS = 3;
+
+// 3. How much text from a single message is sent verbatim. Customers
+// occasionally paste long addresses/order lists/pasted receipts — cap it so
+// one oversized message doesn't dominate the payload.
+const MAX_MESSAGE_CHARS = 600;
+
+function truncateForGemini(text: string): string {
+  if (text.length <= MAX_MESSAGE_CHARS) return text;
+  return `${text.slice(0, MAX_MESSAGE_CHARS)}… [truncated, ${text.length} chars total]`;
+}
 
 // Converts a stored MessageAttachment into what Gemini needs to actually
-// see the picture: inline base64 data (WhatsApp's downloaded images, stored
-// as a data: URI) or a fileUri Gemini fetches itself (Messenger's CDN links).
-function toGeminiImage(attachment?: MessageAttachment): GeminiHistoryImage | undefined {
+// see the picture — always inline base64 data now, never fileUri:
+//  - WhatsApp images are already stored as a data: URI (downloaded at
+//    ingestion time) — just parse it back out.
+//  - Messenger images are stored as the raw Facebook CDN URL. Passing that
+//    straight through as fileData.fileUri relies on Gemini fetching it
+//    server-side, which is unreliable in practice (fileUri support for
+//    arbitrary external URLs is a newer, model-version-gated Gemini
+//    feature, and Facebook's CDN links are signed/time-limited) — that's
+//    the "fails whenever there's an image" bug. Downloading it ourselves
+//    and inlining as base64 removes that dependency entirely, same as the
+//    WhatsApp path already does reliably.
+async function resolveGeminiImage(
+  attachment: MessageAttachment | undefined,
+  logger: Logger,
+): Promise<GeminiHistoryImage | undefined> {
   if (!attachment || attachment.type !== 'image') return undefined;
 
   const dataUriMatch = attachment.url.match(/^data:([^;]+);base64,(.+)$/);
@@ -33,9 +64,19 @@ function toGeminiImage(attachment?: MessageAttachment): GeminiHistoryImage | und
     return { mimeType: dataUriMatch[1], data: dataUriMatch[2] };
   }
 
-  const extension = attachment.url.split('.').pop()?.split(/[?#]/)[0]?.toLowerCase();
-  const mimeType = (extension && IMAGE_EXTENSION_MIME_TYPES[extension]) || 'image/jpeg';
-  return { mimeType, fileUri: attachment.url };
+  try {
+    const res = await fetch(attachment.url);
+    if (!res.ok) {
+      logger.warn(`Image download failed (${res.status}) for ${attachment.url} — sending reply without it`);
+      return undefined;
+    }
+    const mimeType = res.headers.get('content-type')?.split(';')[0] || 'image/jpeg';
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return { mimeType, data: buffer.toString('base64') };
+  } catch (err) {
+    logger.warn(`Image download threw for ${attachment.url}: ${(err as Error).message} — sending reply without it`);
+    return undefined;
+  }
 }
 
 // Everything needed to actually generate + send one AI reply. Pulled out of
@@ -44,6 +85,10 @@ function toGeminiImage(attachment?: MessageAttachment): GeminiHistoryImage | und
 // HTTP handler — ingestion (fast: save message, dedupe, emit socket events)
 // and AI generation (slow: LLM round-trip, possibly several tool-call
 // rounds) are decoupled by the queue in between.
+//
+// Gemini-only right now (OpenAI/Claude removed while debugging the 429s) —
+// every step here is logged with a STEP n/7 tag so a failure's exact
+// position in the pipeline is obvious from the logs alone.
 @Injectable()
 export class AiReplyService {
   private readonly logger = new Logger(AiReplyService.name);
@@ -56,49 +101,57 @@ export class AiReplyService {
     private readonly chatGateway: ChatGateway,
     private readonly dispatchService: DispatchService,
     private readonly geminiService: GeminiService,
-    private readonly openAiService: OpenAiService,
-    private readonly claudeService: ClaudeService,
     private readonly productsApiService: ProductsApiService,
     private readonly ordersService: OrdersService,
   ) {}
 
-  // Settings → AI Instructions → provider dropdown picks this live, per
-  // message — no restart needed since it's read from the DB each time
-  // rather than resolved once at boot.
-  resolveAiProvider(provider: string): AiChatService {
-    if (provider === 'claude') return this.claudeService;
-    if (provider === 'gemini') return this.geminiService;
-    return this.openAiService;
-  }
-
   // Only called by AiReplyProcessor, which itself only runs jobs enqueued
   // from WebhookService's aiShouldReply gate; a human agent's own reply (via
   // ChatService.sendAgentMessage) never routes through this. Throws
-  // RetryableAiError (propagated from the AiChatService call) on transient
-  // provider failures — the caller (the processor) is responsible for
-  // letting that surface so BullMQ retries the job.
+  // RetryableAiError (propagated from GeminiService) on transient provider
+  // failures — the caller (the processor) is responsible for letting that
+  // surface so BullMQ marks the job failed.
   async generateAndSendAiReply(
     conversation: Conversation,
     customer: Customer,
     customInstructions: string | undefined,
-    aiChatService: AiChatService,
   ): Promise<void> {
+    const tag = `conversation=${conversation.id}`;
+    this.logger.log(`[STEP 1/7] ${tag} — fetching recent message history`);
+
     const recent = await this.messageRepo.find({
       where: { conversationId: conversation.id },
       order: { createdAt: 'DESC' },
-      take: 12,
+      take: HISTORY_TURN_LIMIT,
     });
+    const chronological = recent.slice().reverse();
 
-    const history = recent
-      .slice()
-      .reverse()
-      .map((m) => ({
+    // Only the most recent MAX_IMAGE_HISTORY_TURNS customer photos actually
+    // get their bytes resolved/attached — see the comment on that constant.
+    const imageEligibleIds = new Set(
+      chronological
+        .filter((m) => m.senderType === MessageSender.CUSTOMER && m.attachment?.type === 'image')
+        .slice(-MAX_IMAGE_HISTORY_TURNS)
+        .map((m) => m.id),
+    );
+
+    this.logger.log(`[STEP 1/7] ${tag} — resolving image(s) for ${imageEligibleIds.size} eligible turn(s)`);
+
+    const history: GeminiHistoryTurn[] = [];
+    for (const m of chronological) {
+      const shouldResolveImage = m.senderType === MessageSender.CUSTOMER && imageEligibleIds.has(m.id);
+      history.push({
         role: m.senderType === MessageSender.CUSTOMER ? ('user' as const) : ('model' as const),
-        text: m.content,
-        // Only the customer's own photos are worth Gemini "seeing" — an
-        // agent/AI message never has an attachment that needs interpreting.
-        image: m.senderType === MessageSender.CUSTOMER ? toGeminiImage(m.attachment) : undefined,
-      }));
+        text: truncateForGemini(m.content),
+        // Only the customer's own recent photos are worth Gemini "seeing" —
+        // an agent/AI message never has an attachment that needs
+        // interpreting, and older photos are capped out above.
+        image: shouldResolveImage ? await resolveGeminiImage(m.attachment, this.logger) : undefined,
+      });
+    }
+
+    this.logger.log(`[STEP 1/7] ${tag} — loaded ${history.length} history turn(s)`);
+    this.logger.log(`[STEP 2/7] ${tag} — building system prompt`);
 
     const baseSystemPrompt =
       'You are Canvas AI Bot, a friendly customer support assistant for Canvas Art Supplies, an online art & canvas ' +
@@ -121,6 +174,8 @@ export class AiReplyService {
     const systemPrompt = customInstructions?.trim()
       ? `${baseSystemPrompt}\n\nAdditional instructions from the store team (follow these too):\n${customInstructions.trim()}`
       : baseSystemPrompt;
+
+    this.logger.log(`[STEP 3/7] ${tag} — registering tools (search_products, create_order)`);
 
     const tools: GeminiTool[] = [
       {
@@ -185,17 +240,18 @@ export class AiReplyService {
       },
     ];
 
-    this.logger.log(`Calling AI (${aiChatService.constructor.name}) for conversation=${conversation.id}...`);
+    this.logger.log(`[STEP 4/7] ${tag} — calling Gemini (generateReply)`);
     // NOTE: generateReply can throw RetryableAiError here — deliberately not
-    // caught, so it propagates to AiReplyProcessor and fails the BullMQ job
-    // for a retry with backoff instead of silently dropping the reply.
-    const reply = await aiChatService.generateReply(systemPrompt, history, tools);
+    // caught, so it propagates to AiReplyProcessor and fails the BullMQ job.
+    const reply = await this.geminiService.generateReply(systemPrompt, history, tools);
+
     if (!reply) {
-      this.logger.warn(`AI returned no reply for conversation=${conversation.id} — nothing sent`);
+      this.logger.warn(`[STEP 4/7] ${tag} — Gemini returned no reply (empty/safety-blocked) — stopping here`);
       return;
     }
-    this.logger.log(`AI reply generated for conversation=${conversation.id} (${reply.length} chars)`);
+    this.logger.log(`[STEP 4/7] ${tag} — Gemini replied (${reply.length} chars)`);
 
+    this.logger.log(`[STEP 5/7] ${tag} — saving AI message + updating conversation`);
     const saved = await this.messageRepo.save(
       this.messageRepo.create({
         conversationId: conversation.id,
@@ -209,11 +265,14 @@ export class AiReplyService {
     conversation.lastMessageAt = saved.createdAt;
     await this.conversationRepo.save(conversation);
 
+    this.logger.log(`[STEP 6/7] ${tag} — emitting socket events`);
     this.chatGateway.emitNewMessage(toMessageDto(saved));
     conversation.customer = customer;
     this.chatGateway.emitConversationUpdated(toConversationDto(conversation));
 
+    this.logger.log(`[STEP 7/7] ${tag} — dispatching reply to channel`);
     await this.dispatchService.sendReply(conversation, reply);
+    this.logger.log(`[STEP 7/7] ${tag} — done, all 7 steps completed`);
   }
 
   // Posts a visible SYSTEM message when every retry attempt for a reply has

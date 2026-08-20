@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { AiSettings, AiProviderName } from './entities/ai-settings.entity';
 
@@ -11,7 +10,6 @@ export class AiSettingsService {
   constructor(
     @InjectRepository(AiSettings)
     private readonly aiSettingsRepo: Repository<AiSettings>,
-    private readonly configService: ConfigService,
   ) {}
 
   async get(): Promise<AiSettings> {
@@ -21,9 +19,8 @@ export class AiSettingsService {
         id: SETTINGS_ID,
         customInstructions: undefined,
         aiEnabledByDefault: true,
-        // Before anyone's touched the dropdown, fall back to the env var —
-        // keeps whatever was set there working until a real DB row exists.
-        aiProvider: this.configService.get<AiProviderName>('AI_PROVIDER', 'openai'),
+        // Gemini-only right now — OpenAI/Claude removed while debugging.
+        aiProvider: 'gemini' as AiProviderName,
         updatedAt: new Date(),
       }
     );

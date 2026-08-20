@@ -425,6 +425,9 @@ export class WebhookService {
     externalMessageId: string,
     attachment?: MessageAttachment,
   ): Promise<void> {
+    const tag = `conversation=${conversation.id}`;
+    this.logger.log(`[INGEST STEP 1/4] ${tag} — saving inbound customer message`);
+
     const saved = await this.messageRepo.save(
       this.messageRepo.create({
         conversationId: conversation.id,
@@ -441,6 +444,7 @@ export class WebhookService {
     conversation.unreadCount += 1;
     await this.conversationRepo.save(conversation);
 
+    this.logger.log(`[INGEST STEP 2/4] ${tag} — emitting socket events`);
     this.chatGateway.emitNewMessage(toMessageDto(saved));
 
     conversation.customer = customer;
@@ -454,6 +458,7 @@ export class WebhookService {
     //  3. Not already claimed by a specific moderator — assigning someone
     //     to a conversation means it's theirs even if status still says
     //     AI_ACTIVE; the AI shouldn't barge back in.
+    this.logger.log(`[INGEST STEP 3/4] ${tag} — checking AI-should-reply gate`);
     const aiSettings = await this.aiSettingsService.get();
     const aiShouldReply =
       aiSettings.aiEnabledByDefault &&
@@ -461,9 +466,7 @@ export class WebhookService {
       !conversation.assignedModeratorId;
 
     if (aiShouldReply) {
-      this.logger.log(
-        `Queuing AI reply — conversation=${conversation.id} provider=${aiSettings.aiProvider}`,
-      );
+      this.logger.log(`[INGEST STEP 4/4] ${tag} — gate passed, queuing AI reply job (provider=gemini)`);
       // Enqueue instead of generating inline — this is the point where the
       // webhook handler used to block for however long the LLM round-trip
       // took. Now it just pushes a job onto Redis (fast) and returns, so
@@ -477,7 +480,7 @@ export class WebhookService {
         : conversation.status !== ConversationStatus.AI_ACTIVE
           ? `conversation status is "${conversation.status}"`
           : 'conversation is assigned to a moderator';
-      this.logger.log(`AI will NOT reply — conversation=${conversation.id} reason="${reason}"`);
+      this.logger.log(`[INGEST STEP 4/4] ${tag} — gate failed, AI will NOT reply — reason="${reason}"`);
     }
   }
 

@@ -43,19 +43,22 @@ export class AiReplyProcessor extends WorkerHost {
 
   async process(job: Job<AiReplyJobData>): Promise<void> {
     const { conversationId, customerId } = job.data;
+    const tag = `job=${job.id} conversation=${conversationId}`;
+
+    this.logger.log(`[WORKER STEP 1/4] ${tag} — picked up job (attempt ${job.attemptsMade + 1})`);
 
     const conversation = await this.conversationRepo.findOne({ where: { id: conversationId } });
     const customer = await this.customerRepo.findOne({ where: { id: customerId } });
     if (!conversation || !customer) {
-      this.logger.warn(
-        `Job conversation=${conversationId} skipped — conversation or customer no longer exists`,
-      );
+      this.logger.warn(`[WORKER STEP 1/4] ${tag} — skipped: conversation or customer no longer exists`);
       return;
     }
+    this.logger.log(`[WORKER STEP 1/4] ${tag} — loaded conversation + customer`);
 
     // Re-check the same three gates as WebhookService right before actually
     // calling the AI — a moderator may have taken the chat over, or AI been
     // globally disabled, while this job was waiting in the queue.
+    this.logger.log(`[WORKER STEP 2/4] ${tag} — re-checking AI-should-reply gate`);
     const aiSettings = await this.aiSettingsService.get();
     const aiShouldReply =
       aiSettings.aiEnabledByDefault &&
@@ -63,21 +66,17 @@ export class AiReplyProcessor extends WorkerHost {
       !conversation.assignedModeratorId;
 
     if (!aiShouldReply) {
-      this.logger.log(
-        `Job conversation=${conversationId} skipped at execution time — no longer eligible for an AI reply`,
-      );
+      this.logger.log(`[WORKER STEP 2/4] ${tag} — skipped: no longer eligible for an AI reply`);
       return;
     }
+    this.logger.log(`[WORKER STEP 2/4] ${tag} — gate passed, proceeding`);
 
-    const provider = this.aiReplyService.resolveAiProvider(aiSettings.aiProvider);
+    this.logger.log(`[WORKER STEP 3/4] ${tag} — handing off to AiReplyService.generateAndSendAiReply`);
     // Lets RetryableAiError propagate — BullMQ catches whatever this promise
-    // rejects with and applies the job's attempts/backoff config.
-    await this.aiReplyService.generateAndSendAiReply(
-      conversation,
-      customer,
-      aiSettings.customInstructions,
-      provider,
-    );
+    // rejects with and marks the job failed (attempts=1, no retry — see
+    // ai-reply.producer.ts).
+    await this.aiReplyService.generateAndSendAiReply(conversation, customer, aiSettings.customInstructions);
+    this.logger.log(`[WORKER STEP 4/4] ${tag} — job finished successfully`);
   }
 
   // Fires once a job has exhausted every attempt (BullMQ only emits this

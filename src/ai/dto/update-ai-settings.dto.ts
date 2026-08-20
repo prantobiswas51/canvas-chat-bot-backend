@@ -1,7 +1,7 @@
 import { IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
 import type { AiProviderName } from '../entities/ai-settings.entity';
 
-const AI_PROVIDERS: AiProviderName[] = ['openai', 'gemini', 'claude'];
+const AI_PROVIDERS: AiProviderName[] = ['gemini'];
 
 export class UpdateAiSettingsDto {
   @IsOptional()

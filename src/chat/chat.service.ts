@@ -104,11 +104,19 @@ export class ChatService {
     // via "Take Over") — otherwise clearing the assignment alone wouldn't be
     // enough to make the AI actually start replying again (saveInboundMessage
     // requires both: status === AI_ACTIVE AND no assignedModeratorId).
+    //
+    // Assigning a real moderator flips status to HUMAN_MODERATOR too — this
+    // used to only set assignedModeratorId and leave status untouched, which
+    // still correctly blocked the AI from replying (saveInboundMessage's
+    // gate checks assignedModeratorId independently), but left the chat
+    // list's status badge stuck showing "AI Active" since it reads status,
+    // not assignedModeratorId.
     if (!moderatorId) {
       conversation.status = ConversationStatus.AI_ACTIVE;
       this.logger.log(`Conversation ${conversationId} reassigned to AI (unassigned + status=ai_active)`);
     } else {
-      this.logger.log(`Conversation ${conversationId} assigned to moderator=${moderatorId}`);
+      conversation.status = ConversationStatus.HUMAN_MODERATOR;
+      this.logger.log(`Conversation ${conversationId} assigned to moderator=${moderatorId} (status=human_moderator)`);
     }
 
     const saved = await this.conversationRepo.save(conversation);
