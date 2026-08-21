@@ -8,6 +8,7 @@
 // process.env is fully populated before any other file is even imported.
 import 'dotenv/config';
 import { NestFactory, Reflector } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { ClassSerializerInterceptor, Logger, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 
@@ -18,7 +19,13 @@ async function bootstrap() {
 
   // rawBody: true lets us verify Meta's X-Hub-Signature-256 header on the raw
   // bytes (see WhatsappSignatureGuard) — JSON.stringify(req.body) wouldn't match.
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
+
+  // Default body-parser limit is 100kb — way too small for a moderator's
+  // uploaded image, which travels to this API as base64 JSON (see
+  // ChatWindow.tsx's attachment upload). 15mb comfortably covers WhatsApp's
+  // own 5MB image cap and Messenger's 25MB once base64-inflated (~+33%).
+  app.useBodyParser('json', { limit: '15mb' });
 
   app.enableCors({
     // Function form (not a static string) so every REST request's CORS

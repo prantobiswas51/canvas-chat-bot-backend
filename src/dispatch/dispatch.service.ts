@@ -4,8 +4,20 @@ import { Repository } from 'typeorm';
 import { Conversation } from '../chat/entities/conversation.entity';
 import { ChannelAccount, ChannelType } from '../chat/entities/channel-account.entity';
 import { CustomerChannelIdentity } from '../chat/entities/customer-channel-identity.entity';
+import { MessageAttachment } from '../chat/entities/message.entity';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
 import { MessengerApiService } from '../messenger/messenger-api.service';
+
+// Attachments only ever reach here as `data:<mime>;base64,<...>` — the
+// moderator's browser reads the uploaded file straight into this format
+// (see ChatWindow.tsx) since a blob:/local URL wouldn't mean anything once
+// it leaves the browser tab, and Meta's APIs need actual bytes or a media ID
+// anyway, not a URL back into our own app.
+function parseDataUri(url: string): { mimeType: string; base64: string } | undefined {
+  const match = /^data:([^;]+);base64,(.+)$/.exec(url);
+  if (!match) return undefined;
+  return { mimeType: match[1], base64: match[2] };
+}
 
 // Shared by ChatService (agent-typed replies) and WebhookService (AI-generated
 // replies) — one place that knows how to actually deliver a reply out to the
@@ -25,7 +37,7 @@ export class DispatchService {
 
   // Best-effort — the message is always saved locally by the caller first, so
   // a delivery failure here is logged, never thrown.
-  async sendReply(conversation: Conversation, content: string): Promise<void> {
+  async sendReply(conversation: Conversation, content: string, attachment?: MessageAttachment): Promise<void> {
     if (!conversation.channelAccountId) {
       this.logger.warn(`sendReply skipped — conversation=${conversation.id} has no channelAccountId`);
       return;
@@ -46,13 +58,34 @@ export class DispatchService {
       return;
     }
 
+    // Only images actually get uploaded to Meta right now — a non-image file
+    // attachment (PDF, etc.) has nowhere to go yet, so it's dropped here (it
+    // still gets saved + shown in-app) rather than silently sent as if it
+    // were an image.
+    const image = attachment?.type === 'image' ? parseDataUri(attachment.url) : undefined;
+    if (attachment && attachment.type === 'image' && !image) {
+      this.logger.warn(
+        `Attachment for conversation=${conversation.id} isn't a base64 data URI (got "${attachment.url.slice(0, 40)}...") — skipping image delivery`,
+      );
+    }
+    if (attachment && attachment.type !== 'image') {
+      this.logger.warn(`Attachment type="${attachment.type}" has no outbound API yet — only image is sent to ${conversation.channel}`);
+    }
+
     this.logger.log(
-      `Dispatching ${conversation.channel} reply — conversation=${conversation.id} to=${identity.externalUserId} (${content.length} chars)`,
+      `Dispatching ${conversation.channel} reply — conversation=${conversation.id} to=${identity.externalUserId}` +
+        (image ? ' (with image)' : '') +
+        (content ? ` (${content.length} chars)` : ''),
     );
 
     try {
       if (conversation.channel === ChannelType.WHATSAPP) {
-        await this.whatsappApiService.sendText(identity.externalUserId, content);
+        if (image) {
+          // Caption rides along on the same image message — no separate send needed.
+          await this.whatsappApiService.sendImage(identity.externalUserId, image.base64, image.mimeType, content || undefined);
+        } else if (content) {
+          await this.whatsappApiService.sendText(identity.externalUserId, content);
+        }
       } else {
         // accessToken is select:false on the entity — list it explicitly so
         // we actually send from the right Page's own token, not env's.
@@ -60,7 +93,14 @@ export class DispatchService {
           where: { id: conversation.channelAccountId },
           select: { id: true, accessToken: true },
         });
-        await this.messengerApiService.sendText(identity.externalUserId, content, channelAccount?.accessToken);
+        if (image) {
+          await this.messengerApiService.sendImage(identity.externalUserId, image.base64, image.mimeType, channelAccount?.accessToken);
+          // Messenger has no caption field on an image attachment — send any
+          // accompanying text as its own follow-up bubble instead.
+          if (content) await this.messengerApiService.sendText(identity.externalUserId, content, channelAccount?.accessToken);
+        } else if (content) {
+          await this.messengerApiService.sendText(identity.externalUserId, content, channelAccount?.accessToken);
+        }
       }
       this.logger.log(`Delivered ${conversation.channel} reply — conversation=${conversation.id}`);
     } catch (err) {

@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Conversation, ConversationStatus } from './entities/conversation.entity';
@@ -43,18 +43,26 @@ export class ChatService {
   }
 
   async sendAgentMessage(conversationId: string, dto: SendMessageDto) {
+    if (!dto.content && !dto.attachment) {
+      throw new BadRequestException('Message must have content or an attachment');
+    }
     const conversation = await this.assertConversationExists(conversationId);
+
+    // Image-only sends (moderator attaches a photo, types no caption) still
+    // need something in the stored/displayed content field — mirrors the
+    // placeholder text already used for inbound image-only messages.
+    const displayContent = dto.content || (dto.attachment?.type === 'image' ? '📷 Photo' : dto.attachment ? `📎 ${dto.attachment.name}` : '');
 
     const message = this.messageRepo.create({
       conversationId,
       senderType: MessageSender.HUMAN_AGENT,
       senderName: 'Agent',
-      content: dto.content,
+      content: displayContent,
       attachment: dto.attachment,
     });
     const saved = await this.messageRepo.save(message);
 
-    conversation.lastMessage = dto.attachment ? `📎 ${dto.attachment.name}` : dto.content;
+    conversation.lastMessage = displayContent;
     conversation.lastMessageAt = saved.createdAt;
     conversation.unreadCount = 0;
     const savedConversation = await this.conversationRepo.save(conversation);
@@ -72,9 +80,10 @@ export class ChatService {
       this.chatGateway.emitConversationUpdated(toConversationDto(conversationWithCustomer));
     }
 
-    if (dto.content) {
-      await this.dispatchService.sendReply(conversation, dto.content);
-    }
+    // Send the moderator's *actual* typed caption to Meta (may be empty for
+    // an image-only send) — not displayContent's placeholder text, which is
+    // only meant for the local chat list/thread, never the customer.
+    await this.dispatchService.sendReply(conversation, dto.content ?? '', dto.attachment);
 
     return messageDto;
   }

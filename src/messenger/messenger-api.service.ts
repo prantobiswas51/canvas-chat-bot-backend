@@ -42,6 +42,40 @@ export class MessengerApiService {
     }
   }
 
+  // Messenger's Send API accepts an image either as a public `url` or as a
+  // raw multipart upload (`filedata`) — a moderator's local file has neither
+  // a URL nor is it worth re-hosting somewhere just to hand Meta a link, so
+  // upload the bytes directly in the same request. Unlike WhatsApp, there's
+  // no caption field on an image attachment — send any accompanying text as
+  // its own separate message (see DispatchService).
+  async sendImage(psid: string, base64Data: string, mimeType: string, accessToken?: string): Promise<void> {
+    const token = accessToken || this.configService.get<string>('FB_PAGE_ACCESS_TOKEN');
+    const apiVersion = this.configService.get<string>('WA_GRAPH_API_VERSION', 'v21.0');
+
+    if (!token) {
+      this.logger.warn('No Messenger access token (channel_accounts row or FB_PAGE_ACCESS_TOKEN) — skipping image send');
+      return;
+    }
+
+    const buffer = Buffer.from(base64Data, 'base64');
+    const form = new FormData();
+    form.append('recipient', JSON.stringify({ id: psid }));
+    form.append('messaging_type', 'RESPONSE');
+    form.append('message', JSON.stringify({ attachment: { type: 'image', payload: { is_reusable: false } } }));
+    form.append('filedata', new Blob([buffer], { type: mimeType }), 'image');
+
+    const res = await fetch(`https://graph.facebook.com/${apiVersion}/me/messages?access_token=${token}`, {
+      method: 'POST',
+      body: form,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      this.logger.error(`Messenger image send failed (${res.status}): ${errText}`);
+      throw new Error(`Messenger API error: ${res.status}`);
+    }
+  }
+
   // Best-effort — requires Advanced Access for "Business Asset User Profile
   // Access" to work outside of app admins/testers. Returns undefined (never
   // throws) so a lookup failure just falls back to showing the PSID as name.
