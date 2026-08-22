@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Conversation } from '../chat/entities/conversation.entity';
+import { Conversation, ConversationStatus } from '../chat/entities/conversation.entity';
 import { Customer } from '../chat/entities/customer.entity';
 import { Message, MessageAttachment, MessageSender } from '../chat/entities/message.entity';
 import { ChatGateway } from '../realtime/chat.gateway';
@@ -11,6 +11,7 @@ import { ProductsApiService } from '../products/products-api.service';
 import { OrdersService } from '../orders/orders.service';
 import { GeminiService, GeminiTool, GeminiHistoryImage, GeminiHistoryTurn } from './gemini.service';
 import { OpenAiService } from './openai.service';
+import { AiSettingsService } from './ai-settings.service';
 import type { AiChatService } from './ai-chat.interface';
 import type { AiProviderName } from './entities/ai-settings.entity';
 
@@ -104,6 +105,7 @@ export class AiReplyService {
     private readonly dispatchService: DispatchService,
     private readonly geminiService: GeminiService,
     private readonly openAiService: OpenAiService,
+    private readonly aiSettingsService: AiSettingsService,
     private readonly productsApiService: ProductsApiService,
     private readonly ordersService: OrdersService,
   ) {}
@@ -263,6 +265,28 @@ export class AiReplyService {
       return;
     }
     this.logger.log(`[STEP 4/7] ${tag} — ${aiProvider} replied (${reply.length} chars)`);
+
+    // Generation (tool-call rounds, model fallback, retries) can take several
+    // seconds — long enough for a moderator to take the chat over while this
+    // was in flight. AiReplyProcessor only checked the gate once, *before*
+    // this started; re-checking against a fresh DB read here (not the
+    // `conversation` object handed in, which is a snapshot from before
+    // generation began) is what actually stops the reply from going out to a
+    // conversation a human has since claimed.
+    const latest = await this.conversationRepo.findOne({ where: { id: conversation.id } });
+    const latestAiSettings = await this.aiSettingsService.get();
+    const stillEligible =
+      !!latest &&
+      latestAiSettings.aiEnabledByDefault &&
+      latest.status === ConversationStatus.AI_ACTIVE &&
+      !latest.assignedModeratorId;
+
+    if (!stillEligible) {
+      this.logger.warn(
+        `[STEP 4/7] ${tag} — no longer eligible for an AI reply (moderator assigned or status changed while generating) — discarding the generated reply`,
+      );
+      return;
+    }
 
     this.logger.log(`[STEP 5/7] ${tag} — saving AI message + updating conversation`);
     const saved = await this.messageRepo.save(
