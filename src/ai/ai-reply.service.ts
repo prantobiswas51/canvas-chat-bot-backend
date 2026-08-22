@@ -273,7 +273,10 @@ export class AiReplyService {
     // `conversation` object handed in, which is a snapshot from before
     // generation began) is what actually stops the reply from going out to a
     // conversation a human has since claimed.
-    const latest = await this.conversationRepo.findOne({ where: { id: conversation.id } });
+    const latest = await this.conversationRepo.findOne({
+      where: { id: conversation.id },
+      relations: { channelAccount: true },
+    });
     const latestAiSettings = await this.aiSettingsService.get();
     const stillEligible =
       !!latest &&
@@ -281,7 +284,7 @@ export class AiReplyService {
       latest.status === ConversationStatus.AI_ACTIVE &&
       !latest.assignedModeratorId;
 
-    if (!stillEligible) {
+    if (!latest || !stillEligible) {
       this.logger.warn(
         `[STEP 4/7] ${tag} — no longer eligible for an AI reply (moderator assigned or status changed while generating) — discarding the generated reply`,
       );
@@ -305,6 +308,10 @@ export class AiReplyService {
     this.logger.log(`[STEP 6/7] ${tag} — emitting socket events`);
     this.chatGateway.emitNewMessage(toMessageDto(saved));
     conversation.customer = customer;
+    // `latest` (fetched above for the gate re-check) already has
+    // channelAccount loaded — reuse it instead of a third query, just carry
+    // over the lastMessage/lastMessageAt we just wrote to `conversation`.
+    conversation.channelAccount = latest.channelAccount;
     this.chatGateway.emitConversationUpdated(toConversationDto(conversation));
 
     this.logger.log(`[STEP 7/7] ${tag} — dispatching reply to channel`);

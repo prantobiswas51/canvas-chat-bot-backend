@@ -24,7 +24,7 @@ export class ChatService {
 
   async listConversations() {
     const conversations = await this.conversationRepo.find({
-      relations: { customer: true },
+      relations: { customer: true, channelAccount: true },
       order: { lastMessageAt: 'DESC' },
     });
 
@@ -70,11 +70,12 @@ export class ChatService {
     const messageDto = toMessageDto(saved);
     this.chatGateway.emitNewMessage(messageDto);
 
-    // Agent-sent messages don't need a customer relation load for the list
-    // patch — the frontend only needs the fields that changed.
+    // Re-fetch with relations for the list patch — toConversationDto needs
+    // both customer (name/phone) and channelAccount (which Page/number this
+    // is, for multi-account setups) to build a complete DTO.
     const conversationWithCustomer = await this.conversationRepo.findOne({
       where: { id: savedConversation.id },
-      relations: { customer: true },
+      relations: { customer: true, channelAccount: true },
     });
     if (conversationWithCustomer) {
       this.chatGateway.emitConversationUpdated(toConversationDto(conversationWithCustomer));
@@ -95,7 +96,7 @@ export class ChatService {
 
     const conversationWithCustomer = await this.conversationRepo.findOne({
       where: { id: saved.id },
-      relations: { customer: true },
+      relations: { customer: true, channelAccount: true },
     });
     if (conversationWithCustomer) {
       this.chatGateway.emitConversationUpdated(toConversationDto(conversationWithCustomer));
@@ -132,7 +133,7 @@ export class ChatService {
 
     const conversationWithCustomer = await this.conversationRepo.findOne({
       where: { id: saved.id },
-      relations: { customer: true },
+      relations: { customer: true, channelAccount: true },
     });
     if (conversationWithCustomer) {
       this.chatGateway.emitConversationUpdated(toConversationDto(conversationWithCustomer));

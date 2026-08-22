@@ -228,7 +228,7 @@ export class WebhookService {
       content = `[Unsupported message type: ${waMessage.type}]`;
     }
 
-    await this.saveInboundMessage(conversation, customer, content, waMessage.id, attachment);
+    await this.saveInboundMessage(conversation, customer, channelAccount, content, waMessage.id, attachment);
   }
 
   // Downloads (if needed) and transcribes a voice note via Whisper, folding
@@ -412,7 +412,7 @@ export class WebhookService {
       content = '[Unsupported message type]';
     }
 
-    await this.saveInboundMessage(conversation, customer, content, message.mid, attachment);
+    await this.saveInboundMessage(conversation, customer, channelAccount, content, message.mid, attachment);
   }
 
   // Saves the inbound message, patches the conversation's preview/unread
@@ -421,6 +421,7 @@ export class WebhookService {
   private async saveInboundMessage(
     conversation: Conversation,
     customer: Customer,
+    channelAccount: ChannelAccount,
     content: string,
     externalMessageId: string,
     attachment?: MessageAttachment,
@@ -448,6 +449,10 @@ export class WebhookService {
     this.chatGateway.emitNewMessage(toMessageDto(saved));
 
     conversation.customer = customer;
+    // Not loaded via a relation here (conversation was fetched by ID only) —
+    // attach it the same way .customer is, so the chat list can show which
+    // connected Page/number this message came from.
+    conversation.channelAccount = channelAccount;
     this.chatGateway.emitConversationUpdated(toConversationDto(conversation));
 
     // Three independent gates, all must pass for the AI to reply:

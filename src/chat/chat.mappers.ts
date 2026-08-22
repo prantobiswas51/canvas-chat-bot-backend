@@ -17,10 +17,15 @@ export function formatTimestamp(date: Date): string {
 }
 
 // Requires the `customer` relation to be loaded on the conversation.
+// `channelAccount` is optional — when loaded, its displayName lets the chat
+// list show *which* connected Page/number a message came from (there can be
+// several per channel type, e.g. two FB Pages both showing as "FB
+// Messenger"), not just the generic channel type.
 export function toConversationDto(c: Conversation) {
   return {
     id: c.id,
     channel: c.channel,
+    channelAccountName: c.channelAccount?.displayName,
     status: c.status,
     assignedModeratorId: c.assignedModeratorId,
     adReferral: c.adReferral ?? undefined,
