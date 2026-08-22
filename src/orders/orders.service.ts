@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order, OrderStatus } from './entities/order.entity';
+import { UpdateOrderDto } from './dto/update-order.dto';
 
 export interface CreateOrderInput {
   customerName: string;
@@ -100,5 +101,36 @@ export class OrdersService {
       throw new NotFoundException(`Order ${id} not found`);
     }
     return order;
+  }
+
+  async update(id: string, patch: UpdateOrderDto): Promise<Order> {
+    const order = await this.findOne(id);
+
+    if (patch.customerName !== undefined) order.customerName = patch.customerName;
+    if (patch.address !== undefined) order.address = patch.address;
+    if (patch.phone !== undefined) order.phone = patch.phone;
+    if (patch.productSku !== undefined) order.productSku = patch.productSku;
+    if (patch.notes !== undefined) order.notes = patch.notes;
+    if (patch.status !== undefined) order.status = patch.status;
+    if (patch.quantity !== undefined) order.quantity = patch.quantity;
+    if (patch.unitPrice !== undefined) order.unitPrice = patch.unitPrice.toFixed(2);
+
+    // Re-derive totalPrice whenever either factor changed — stored
+    // denormalized so the orders list/table doesn't need to compute it
+    // client-side, but that means it goes stale if we don't recompute here.
+    if (patch.quantity !== undefined || patch.unitPrice !== undefined) {
+      const unitPrice = order.unitPrice !== undefined ? parseFloat(order.unitPrice) : undefined;
+      order.totalPrice = unitPrice !== undefined ? (unitPrice * order.quantity).toFixed(2) : order.totalPrice;
+    }
+
+    const saved = await this.orderRepo.save(order);
+    this.logger.log(`Order ${saved.invoiceId} updated`);
+    return saved;
+  }
+
+  async remove(id: string): Promise<void> {
+    const order = await this.findOne(id);
+    await this.orderRepo.remove(order);
+    this.logger.log(`Order ${order.invoiceId} deleted`);
   }
 }
