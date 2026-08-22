@@ -38,7 +38,7 @@ export class ProductsApiService {
   async search(query: string): Promise<unknown> {
     const baseUrl = this.configService.get<string>(
       'PRODUCTS_API_BASE_URL',
-      'https://dev.canvasdhaka.com/api/admin/products',
+      'https://canvasdhaka.com/api/admin/products',
     );
 
     const token = await this.getAccessToken();
