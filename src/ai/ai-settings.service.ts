@@ -19,7 +19,8 @@ export class AiSettingsService {
         id: SETTINGS_ID,
         customInstructions: undefined,
         aiEnabledByDefault: true,
-        // Gemini-only right now — OpenAI/Claude removed while debugging.
+        // Gemini stays the default for new/unconfigured setups — switch via
+        // Settings → AI Instructions.
         aiProvider: 'gemini' as AiProviderName,
         updatedAt: new Date(),
       }

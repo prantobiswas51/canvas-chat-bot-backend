@@ -71,13 +71,21 @@ export class AiReplyProcessor extends WorkerHost {
     }
     this.logger.log(`[WORKER STEP 2/4] ${tag} — gate passed, proceeding`);
 
-    this.logger.log(`[WORKER STEP 3/4] ${tag} — handing off to AiReplyService.generateAndSendAiReply`);
+    this.logger.log(
+      `[WORKER STEP 3/4] ${tag} — handing off to AiReplyService.generateAndSendAiReply (provider="${aiSettings.aiProvider}")`,
+    );
     // Lets RetryableAiError propagate — BullMQ catches whatever this promise
     // rejects with and retries the job with backoff, up to JOB_OPTS.attempts
     // (see ai-reply.producer.ts). GeminiService already tries a fallback
     // model chain before ever throwing, so a job-level retry only happens
-    // once every model has failed transiently.
-    await this.aiReplyService.generateAndSendAiReply(conversation, customer, aiSettings.customInstructions);
+    // once every model has failed transiently — OpenAI has no such chain
+    // yet, so a job-level retry is its only recovery from a transient error.
+    await this.aiReplyService.generateAndSendAiReply(
+      conversation,
+      customer,
+      aiSettings.customInstructions,
+      aiSettings.aiProvider,
+    );
     this.logger.log(`[WORKER STEP 4/4] ${tag} — job finished successfully`);
   }
 

@@ -1,10 +1,10 @@
 import { Column, Entity, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 
-// OpenAI/Claude removed while debugging Gemini 429s — only Gemini is wired
-// up right now (see AiReplyService/GeminiService). Kept as a union (rather
-// than deleting the column) so re-adding a provider later is just a TS
-// change again, no migration.
-export type AiProviderName = 'gemini';
+// Which chat-completion provider handles replies — picked per message from
+// this column (see AiReplyService.resolveAiProvider), so the Settings page
+// dropdown takes effect immediately, no restart needed. Claude was tried
+// earlier and removed; re-add it here the same way if it comes back.
+export type AiProviderName = 'gemini' | 'openai';
 
 // Singleton row (id is always 'default') — one shared set of custom
 // instructions appended to every AI reply's system prompt, editable from

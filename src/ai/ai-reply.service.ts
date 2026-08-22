@@ -10,6 +10,9 @@ import { DispatchService } from '../dispatch/dispatch.service';
 import { ProductsApiService } from '../products/products-api.service';
 import { OrdersService } from '../orders/orders.service';
 import { GeminiService, GeminiTool, GeminiHistoryImage, GeminiHistoryTurn } from './gemini.service';
+import { OpenAiService } from './openai.service';
+import type { AiChatService } from './ai-chat.interface';
+import type { AiProviderName } from './entities/ai-settings.entity';
 
 // Everything below is deterministic, code-only trimming of what gets sent
 // to Gemini per reply — no extra AI call involved (a real conversation
@@ -86,8 +89,7 @@ async function resolveGeminiImage(
 // and AI generation (slow: LLM round-trip, possibly several tool-call
 // rounds) are decoupled by the queue in between.
 //
-// Gemini-only right now (OpenAI/Claude removed while debugging the 429s) —
-// every step here is logged with a STEP n/7 tag so a failure's exact
+// Every step here is logged with a STEP n/7 tag so a failure's exact
 // position in the pipeline is obvious from the logs alone.
 @Injectable()
 export class AiReplyService {
@@ -101,21 +103,32 @@ export class AiReplyService {
     private readonly chatGateway: ChatGateway,
     private readonly dispatchService: DispatchService,
     private readonly geminiService: GeminiService,
+    private readonly openAiService: OpenAiService,
     private readonly productsApiService: ProductsApiService,
     private readonly ordersService: OrdersService,
   ) {}
 
+  // Settings → AI Instructions → provider dropdown picks this live, per
+  // message — no restart needed since it's read from the DB each time
+  // rather than resolved once at boot.
+  resolveAiProvider(provider: AiProviderName): AiChatService {
+    if (provider === 'openai') return this.openAiService;
+    return this.geminiService;
+  }
+
   // Only called by AiReplyProcessor, which itself only runs jobs enqueued
   // from WebhookService's aiShouldReply gate; a human agent's own reply (via
   // ChatService.sendAgentMessage) never routes through this. Throws
-  // RetryableAiError (propagated from GeminiService) on transient provider
-  // failures — the caller (the processor) is responsible for letting that
-  // surface so BullMQ marks the job failed.
+  // RetryableAiError (propagated from the chosen AiChatService) on transient
+  // provider failures — the caller (the processor) is responsible for
+  // letting that surface so BullMQ marks the job failed.
   async generateAndSendAiReply(
     conversation: Conversation,
     customer: Customer,
     customInstructions: string | undefined,
+    aiProvider: AiProviderName,
   ): Promise<void> {
+    const aiChatService = this.resolveAiProvider(aiProvider);
     const tag = `conversation=${conversation.id}`;
     this.logger.log(`[STEP 1/7] ${tag} — fetching recent message history`);
 
@@ -240,16 +253,16 @@ export class AiReplyService {
       },
     ];
 
-    this.logger.log(`[STEP 4/7] ${tag} — calling Gemini (generateReply)`);
+    this.logger.log(`[STEP 4/7] ${tag} — calling AI provider="${aiProvider}" (generateReply)`);
     // NOTE: generateReply can throw RetryableAiError here — deliberately not
     // caught, so it propagates to AiReplyProcessor and fails the BullMQ job.
-    const reply = await this.geminiService.generateReply(systemPrompt, history, tools);
+    const reply = await aiChatService.generateReply(systemPrompt, history, tools);
 
     if (!reply) {
-      this.logger.warn(`[STEP 4/7] ${tag} — Gemini returned no reply (empty/safety-blocked) — stopping here`);
+      this.logger.warn(`[STEP 4/7] ${tag} — ${aiProvider} returned no reply (empty/safety-blocked) — stopping here`);
       return;
     }
-    this.logger.log(`[STEP 4/7] ${tag} — Gemini replied (${reply.length} chars)`);
+    this.logger.log(`[STEP 4/7] ${tag} — ${aiProvider} replied (${reply.length} chars)`);
 
     this.logger.log(`[STEP 5/7] ${tag} — saving AI message + updating conversation`);
     const saved = await this.messageRepo.save(
