@@ -32,6 +32,15 @@ interface OpenAiChatCompletionResponse {
 
 const MAX_TOOL_ROUNDS = 3;
 
+// Tried in order after OPENAI_MODEL, whenever a call fails with a
+// *retryable* error (429 rate/spend limit or 5xx) — same reasoning as
+// Gemini's fallback chain (see gemini.service.ts): one model being
+// overloaded/rate-limited doesn't mean every model is, so hopping to a
+// sibling model within the same job attempt recovers a reply immediately
+// instead of failing the whole job and waiting on BullMQ's backoff.
+// Overridable via OPENAI_FALLBACK_MODELS (comma-separated).
+const DEFAULT_FALLBACK_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1-mini'];
+
 // Converts the shared tool-schema shape's upper-case type names ("OBJECT",
 // "STRING", ...) — a Gemini-ism the rest of the app's tool definitions are
 // written in — into the lower-case JSON Schema OpenAI's function-calling
@@ -82,6 +91,15 @@ export class OpenAiService {
 
   constructor(private readonly configService: ConfigService) {}
 
+  private modelChain(): string[] {
+    const primary = this.configService.get<string>('OPENAI_MODEL', 'gpt-4o-mini');
+    const fallbacksRaw = this.configService.get<string>('OPENAI_FALLBACK_MODELS');
+    const fallbacks = fallbacksRaw
+      ? fallbacksRaw.split(',').map((m) => m.trim()).filter(Boolean)
+      : DEFAULT_FALLBACK_MODELS;
+    return [primary, ...fallbacks.filter((m) => m !== primary)];
+  }
+
   async generateReply(
     systemPrompt: string,
     history: GeminiHistoryTurn[],
@@ -91,7 +109,6 @@ export class OpenAiService {
     // OPENAI_API_KEY works too if you'd rather name it that.
     const apiKey =
       this.configService.get<string>('CHATGPT_API_KEY') || this.configService.get<string>('OPENAI_API_KEY');
-    const model = this.configService.get<string>('OPENAI_MODEL', 'gpt-4o-mini');
 
     if (!apiKey) {
       this.logger.warn('CHATGPT_API_KEY/OPENAI_API_KEY not configured — skipping AI reply');
@@ -100,6 +117,36 @@ export class OpenAiService {
 
     if (history.length === 0) return undefined;
 
+    const chain = this.modelChain();
+    let lastError: unknown;
+
+    for (const model of chain) {
+      try {
+        return await this.generateReplyWithModel(systemPrompt, history, tools, apiKey, model);
+      } catch (err) {
+        if (!(err instanceof RetryableAiError)) throw err;
+        lastError = err;
+        const isLast = model === chain[chain.length - 1];
+        if (!isLast) {
+          this.logger.warn(`Model "${model}" hit a transient error — falling back to next model in chain`);
+        }
+      }
+    }
+
+    // Every model in the chain failed transiently — this is now a real
+    // outage worth letting the BullMQ job retry (with backoff) for, not
+    // something another model swap can fix.
+    this.logger.error(`All ${chain.length} model(s) in fallback chain failed transiently — giving up for this attempt`);
+    throw lastError instanceof RetryableAiError ? lastError : new RetryableAiError('All OpenAI models failed');
+  }
+
+  private async generateReplyWithModel(
+    systemPrompt: string,
+    history: GeminiHistoryTurn[],
+    tools: GeminiTool[],
+    apiKey: string,
+    model: string,
+  ): Promise<string | undefined> {
     let messages: OpenAiMessage[] = [
       { role: 'system', content: systemPrompt },
       ...history.map((turn) => ({
