@@ -87,6 +87,24 @@ export class OrdersService {
     return { data, total, page, limit };
   }
 
+  // Real numbers for the chat window's customer sidebar (previously that
+  // panel showed deterministic-but-fake dummy data — see
+  // withDummyCrmData.ts on the frontend). Aggregated in SQL rather than
+  // loading every order row for customers with a long history.
+  async statsForCustomer(customerId: string): Promise<{ totalOrders: number; totalSpent: number }> {
+    const raw = await this.orderRepo
+      .createQueryBuilder('order')
+      .select('COUNT(*)', 'count')
+      .addSelect('COALESCE(SUM(order.totalPrice), 0)', 'sum')
+      .where('order.customerId = :customerId', { customerId })
+      .getRawOne<{ count: string; sum: string }>();
+
+    return {
+      totalOrders: parseInt(raw?.count ?? '0', 10),
+      totalSpent: Math.round(parseFloat(raw?.sum ?? '0')),
+    };
+  }
+
   async stats(): Promise<{ total: number; aiGenerated: number }> {
     const [total, aiGenerated] = await Promise.all([
       this.orderRepo.count(),

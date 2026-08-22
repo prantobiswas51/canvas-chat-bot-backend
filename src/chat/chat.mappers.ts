@@ -41,6 +41,7 @@ export function toConversationDto(c: Conversation) {
       totalOrders: 0,
       totalSpent: 0,
       tags: c.customer.tags ?? [],
+      notes: c.customer.notes ?? undefined,
     },
   };
 }

@@ -10,6 +10,8 @@ import { AuthModule } from './auth/auth.module';
 import { ChatModule } from './chat/chat.module';
 import { ChannelsModule } from './channels/channels.module';
 import { OrdersModule } from './orders/orders.module';
+import { LogsModule } from './logs/logs.module';
+import { CustomersModule } from './customers/customers.module';
 
 @Module({
   imports: [
@@ -39,6 +41,8 @@ import { OrdersModule } from './orders/orders.module';
     ChatModule,
     ChannelsModule,
     OrdersModule,
+    LogsModule,
+    CustomersModule,
   ],
   controllers: [AppController],
   providers: [AppService],

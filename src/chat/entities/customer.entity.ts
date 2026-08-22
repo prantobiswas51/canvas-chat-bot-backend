@@ -18,6 +18,12 @@ export class Customer {
   @Column({ type: 'text', array: true, default: () => "'{}'" })
   tags: string[];
 
+  // Internal, team-only note about this customer — shown/edited in the chat
+  // window's customer sidebar. Not visible to the customer, never sent
+  // anywhere (Meta APIs, AI system prompt, etc.).
+  @Column({ type: 'text', nullable: true })
+  notes?: string;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

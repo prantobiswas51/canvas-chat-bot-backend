@@ -14,6 +14,14 @@ export class OrdersController {
     return this.ordersService.stats();
   }
 
+  // Declared before ':id' for the same reason as "stats" above — this is a
+  // 3-segment path though ("customer/:customerId/stats"), so it wouldn't
+  // actually collide with the single-segment ':id' route either way.
+  @Get('customer/:customerId/stats')
+  customerStats(@Param('customerId', ParseUUIDPipe) customerId: string) {
+    return this.ordersService.statsForCustomer(customerId);
+  }
+
   @Get()
   list(
     @Query('page') page?: string,
